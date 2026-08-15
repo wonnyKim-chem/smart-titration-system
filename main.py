@@ -35,6 +35,10 @@ class MeasurementHub:
             "ph": deque(maxlen=MAX_STREAM_SIZE),
         }
         self.seen_ids: dict[Channel, set[str]] = {"burette": set(), "ph": set()}
+        self.measurement_clients: dict[Channel, set[WebSocket]] = {
+            "burette": set(),
+            "ph": set(),
+        }
         self.dashboard_clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
         self.latest_analysis = self._empty_analysis()
@@ -273,6 +277,7 @@ async def measurement_socket(websocket: WebSocket, channel: str) -> None:
 
     await websocket.accept()
     typed_channel = cast(Channel, channel)
+    hub.measurement_clients[typed_channel].add(websocket)
     try:
         while True:
             message = await websocket.receive_json()
@@ -293,6 +298,8 @@ async def measurement_socket(websocket: WebSocket, channel: str) -> None:
             )
     except WebSocketDisconnect:
         return
+    finally:
+        hub.measurement_clients[typed_channel].discard(websocket)
 
 
 def get_local_ip() -> str:

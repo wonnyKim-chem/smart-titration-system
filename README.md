@@ -6,6 +6,7 @@
 
 ```text
 .
+├─ launcher.py              PySide6 Windows 운영 패널과 서버 제어
 ├─ main.py                  FastAPI, WebSocket, 시간 정합, SciPy 분석
 ├─ static/
 │  ├─ burette.html/js       뷰렛 원근 보정과 메니스커스 추적
@@ -26,10 +27,12 @@ Python 3.11 이상이 필요합니다.
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python main.py
+python launcher.py
 ```
 
-서버는 `0.0.0.0:8000`에서 실행되며, 콘솔에 로컬 IP 주소와 QR 코드가 표시됩니다. Windows 방화벽에서 TCP 8000 인바운드 연결을 허용해야 다른 기기가 접속할 수 있습니다.
+GUI가 HTTPS 인증서, 서버 상태, 접속 주소와 QR 코드, 연결된 카메라 수, 측정 레코드 수를 표시합니다. 인증서가 유효하면 서버가 자동으로 시작되며, 창을 닫아도 Windows 알림 영역에서 계속 실행됩니다. Windows 방화벽에서 TCP 8000 인바운드 연결을 허용해야 다른 기기가 접속할 수 있습니다.
+
+개발 중 콘솔 서버만 실행하려면 인증서 설정 후 `python main.py`를 사용합니다.
 
 | 경로 | 화면 |
 | --- | --- |
@@ -42,6 +45,8 @@ python main.py
 모바일 브라우저의 `getUserMedia`는 신뢰된 보안 컨텍스트에서만 동작합니다. PC의 `localhost`는 HTTP 예외가 적용되지만, 휴대폰에서 `http://192.168.x.x:8000`처럼 접속하면 카메라 API가 제공되지 않습니다. iPhone의 Safari와 Chrome은 모두 iOS의 WebKit 카메라 계층을 사용하므로 두 브라우저에 동일하게 HTTPS가 필요합니다.
 
 ### 1. Windows에서 로컬 인증서 만들기
+
+GUI에서 `인증서 설정`을 누르면 아래 스크립트가 자동으로 실행됩니다. 수동으로 실행할 수도 있습니다.
 
 ```powershell
 .\setup-ios-https.ps1
@@ -72,7 +77,9 @@ EXE는 `%LOCALAPPDATA%\SmartTitration\certs`의 인증서를 자동으로 찾으
 .\dist\SmartTitration\SmartTitration.exe
 ```
 
-콘솔 QR 코드의 주소가 반드시 `https://`로 시작해야 합니다. iPhone과 PC는 같은 Wi-Fi에 연결되어 있어야 하며, Windows 방화벽에서 TCP 8000과 iPhone의 해당 브라우저에 대한 `로컬 네트워크` 접근을 허용해야 합니다.
+GUI의 모바일 접속 주소와 QR 코드는 실제 HTTPS 서버가 시작된 뒤에만 표시됩니다. 주소가 반드시 `https://`로 시작하는지 확인합니다. iPhone과 PC는 같은 Wi-Fi에 연결되어 있어야 하며, Windows 방화벽에서 TCP 8000과 iPhone의 해당 브라우저에 대한 `로컬 네트워크` 접근을 허용해야 합니다.
+
+`대시보드 열기`는 서버 PC의 기본 브라우저에서 같은 실시간 데이터 화면을 엽니다. 창의 닫기 버튼은 서버를 종료하지 않고 알림 영역으로 최소화하며, 서버를 완전히 종료하려면 트레이 메뉴의 `서버 종료`를 선택합니다.
 
 ### 4. iPhone 권한 확인하기
 
@@ -118,4 +125,4 @@ python -m pytest -q
 .\build.ps1 -Clean
 ```
 
-결과는 `dist\SmartTitration\SmartTitration.exe`에 생성됩니다. `COLLECT` 방식이므로 배포할 때 `dist\SmartTitration` 폴더 전체를 함께 복사해야 합니다.
+결과는 `dist\SmartTitration\SmartTitration.exe`에 생성됩니다. 실행하면 콘솔 대신 Windows 운영 패널이 열립니다. `COLLECT` 방식이므로 배포할 때 `dist\SmartTitration` 폴더 전체를 함께 복사해야 합니다.

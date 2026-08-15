@@ -4,10 +4,13 @@ from pathlib import Path
 project_root = Path(SPECPATH)
 
 analysis = Analysis(
-    [str(project_root / "main.py")],
+    [str(project_root / "launcher.py")],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[(str(project_root / "static"), "static")],
+    datas=[
+        (str(project_root / "static"), "static"),
+        (str(project_root / "setup-ios-https.ps1"), "."),
+    ],
     hiddenimports=[
         "uvicorn.logging",
         "uvicorn.loops.auto",
@@ -34,7 +37,7 @@ executable = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
 )
 
 bundle = COLLECT(

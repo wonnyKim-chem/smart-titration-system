@@ -9,6 +9,7 @@ from main import (
     SYNC_TOLERANCE_MS,
     analyse_streams,
     app,
+    hub,
     match_by_timestamp,
     resolve_tls_configuration,
 )
@@ -58,6 +59,13 @@ def test_health_and_static_pages() -> None:
         assert client.get("/").status_code == 200
         assert client.get("/burette").status_code == 200
         assert client.get("/ph-meter").status_code == 200
+
+
+def test_measurement_websocket_tracks_connected_camera() -> None:
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/burette"):
+            assert len(hub.measurement_clients["burette"]) == 1
+        assert len(hub.measurement_clients["burette"]) == 0
 
 
 def test_tls_configuration_rejects_missing_files(
