@@ -325,9 +325,17 @@ async function loadExperiments(autoSelect = true) {
   if (autoSelect && !currentExperiment && experiments.length) {
     await selectExperiment(body.activeId ?? experiments[0].id, false);
   } else if (!experiments.length && !currentExperiment && !newExperimentDialog.open) {
-    newExperimentDialog.showModal();
-    requestAnimationFrame(() => experimentTitleInput.focus());
+    openNewExperimentDialog();
   }
+}
+
+function openNewExperimentDialog() {
+  experimentTitleInput.value = "실험 1";
+  newExperimentDialog.showModal();
+  requestAnimationFrame(() => {
+    experimentTitleInput.focus();
+    experimentTitleInput.select();
+  });
 }
 
 async function createExperiment(title, recordingAction = "") {
@@ -456,9 +464,7 @@ window.addEventListener("load", () => {
 });
 
 newExperimentButton.addEventListener("click", () => {
-  experimentTitleInput.value = "";
-  newExperimentDialog.showModal();
-  requestAnimationFrame(() => experimentTitleInput.focus());
+  openNewExperimentDialog();
 });
 newExperimentForm.addEventListener("submit", async (event) => {
   event.preventDefault();

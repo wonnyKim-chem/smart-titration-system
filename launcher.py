@@ -55,6 +55,7 @@ from wifi_share import (
     build_wifi_qr_payload,
     get_connected_ssid,
     get_wifi_profiles,
+    has_wireless_adapter,
     read_wifi_profile,
 )
 
@@ -293,6 +294,14 @@ class MainWindow(QMainWindow):
         header.addWidget(self.server_status)
         root.addLayout(header)
 
+        same_network_notice = QLabel(
+            "서버와 스마트기기는 전부 같은 Wi-Fi에 연결되어야 합니다."
+        )
+        same_network_notice.setObjectName("sameNetworkNotice")
+        same_network_notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        same_network_notice.setWordWrap(True)
+        root.addWidget(same_network_notice)
+
         content = QHBoxLayout()
         content.setSpacing(18)
 
@@ -301,7 +310,7 @@ class MainWindow(QMainWindow):
         connection_layout = QVBoxLayout(connection_panel)
         connection_layout.setContentsMargins(22, 20, 22, 22)
         connection_layout.setSpacing(14)
-        panel_title = QLabel("모바일 접속")
+        panel_title = QLabel("대시보드 및 센서 QR코드")
         panel_title.setObjectName("sectionTitle")
         connection_layout.addWidget(panel_title)
         self.qr_label = QLabel()
@@ -309,6 +318,9 @@ class MainWindow(QMainWindow):
         self.qr_label.setFixedSize(236, 236)
         self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         connection_layout.addWidget(self.qr_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        address_label = QLabel("대시보드 주소:")
+        address_label.setObjectName("addressLabel")
+        connection_layout.addWidget(address_label)
         self.url_input = QLineEdit(self.access_url)
         self.url_input.setReadOnly(True)
         self.url_input.setObjectName("urlInput")
@@ -468,6 +480,15 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 font-weight: 700;
             }
+            QLabel#sameNetworkNotice {
+                padding: 11px 14px;
+                border: 2px solid #087f6d;
+                color: #045e51;
+                background: #e5f3ef;
+                font-size: 14px;
+                font-weight: 700;
+            }
+            QLabel#addressLabel { color: #44504d; font-size: 11px; font-weight: 700; }
             QFrame#panel { background: #ffffff; border-top: 3px solid #17201f; }
             QLabel#sectionTitle { font-size: 15px; font-weight: 700; }
             QLabel#mutedText { color: #66716e; line-height: 1.5; }
@@ -502,6 +523,16 @@ class MainWindow(QMainWindow):
             QPushButton#primaryButton { color: #ffffff; border-color: #045e51; background: #087f6d; }
             QPushButton#primaryButton:hover { background: #045e51; }
             QPushButton#textButton { min-height: 28px; border: 0; color: #087f6d; background: transparent; }
+            QCheckBox#autoRenewCertificate {
+                min-height: 28px;
+                padding: 9px 11px;
+                border: 2px solid #087f6d;
+                border-radius: 4px;
+                color: #17201f;
+                background: #fff8dc;
+                font-weight: 700;
+            }
+            QCheckBox#autoRenewCertificate::indicator { width: 21px; height: 21px; }
             QFrame#metric { background: #ffffff; border: 1px solid #cbd1cd; }
             QLabel#metricTitle { color: #66716e; font-size: 11px; }
             QLabel#metricValue { font-family: Consolas; font-size: 20px; font-weight: 700; }
@@ -781,6 +812,30 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(self.access_url))
 
     def _show_wifi_share(self) -> None:
+        connected = get_connected_ssid()
+        if not connected:
+            if has_wireless_adapter():
+                open_hotspot = QMessageBox.question(
+                    self,
+                    "Wi-Fi에 연결되어 있지 않습니다",
+                    "현재 서버 PC는 Wi-Fi에 연결되어 있지 않습니다. 무선 랜카드가 감지되었습니다.\n\n"
+                    "Windows 모바일 핫스팟 설정을 열어 네트워크 이름과 암호를 확인하거나 핫스팟을 "
+                    "켜시겠습니까? 핫스팟을 켠 뒤 스마트기기를 해당 Wi-Fi에 연결해야 합니다.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if open_hotspot == QMessageBox.StandardButton.Yes:
+                    QDesktopServices.openUrl(QUrl("ms-settings:network-mobilehotspot"))
+                return
+            QMessageBox.information(
+                self,
+                "무선 랜카드를 찾을 수 없습니다",
+                "이 서버 PC가 연결된 네트워크의 무선망 정보를 확인하세요.\n\n"
+                "서버 PC는 이더넷으로 연결되어도 되지만, 서버 PC와 스마트기기는 서로 통신할 수 있는 "
+                "같은 공유기 또는 같은 로컬 네트워크에 연결되어야 합니다.",
+            )
+            return
+
         warning = QMessageBox.warning(
             self,
             "Wi-Fi 암호가 포함된 QR",
@@ -797,7 +852,6 @@ class MainWindow(QMainWindow):
             profiles = get_wifi_profiles()
             if not profiles:
                 raise RuntimeError("Windows에 저장된 Wi-Fi 프로필이 없습니다.")
-            connected = get_connected_ssid()
             default_index = profiles.index(connected) if connected in profiles else 0
             profile, accepted = QInputDialog.getItem(
                 self,

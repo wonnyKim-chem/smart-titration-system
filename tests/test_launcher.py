@@ -2,6 +2,7 @@ import socket
 from pathlib import Path
 
 import pytest
+import launcher
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
@@ -60,6 +61,11 @@ def test_first_run_does_not_install_certificate_automatically(
     required_notice = window.findChild(QLabel, "requiredNotice")
     assert required_notice is not None
     assert "모바일 브라우저 카메라" in required_notice.text()
+    label_texts = {label.text() for label in window.findChildren(QLabel)}
+    assert "대시보드 및 센서 QR코드" in label_texts
+    assert "대시보드 주소:" in label_texts
+    assert "서버와 스마트기기는 전부 같은 Wi-Fi에 연결되어야 합니다." in label_texts
+    assert "QCheckBox#autoRenewCertificate" in window.styleSheet()
     window.quitting = True
     window.tray.hide()
     window.close()
@@ -104,6 +110,35 @@ def test_close_can_hide_window_in_tray(
 
     assert not event.isAccepted()
     assert window.isHidden()
+    window.quitting = True
+    window.tray.hide()
+    window.close()
+    application.processEvents()
+
+
+def test_wifi_share_opens_mobile_hotspot_when_adapter_is_available(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(launcher, "get_connected_ssid", lambda: None)
+    monkeypatch.setattr(launcher, "has_wireless_adapter", lambda: True)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args: QMessageBox.StandardButton.Yes,
+    )
+    opened_urls = []
+    monkeypatch.setattr(
+        launcher.QDesktopServices,
+        "openUrl",
+        lambda url: opened_urls.append(url.toString()) or True,
+    )
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow(auto_start=False)
+
+    window._show_wifi_share()
+
+    assert opened_urls == ["ms-settings:network-mobilehotspot"]
     window.quitting = True
     window.tray.hide()
     window.close()

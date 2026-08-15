@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import locale
+import re
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -8,6 +9,9 @@ from pathlib import Path
 
 
 CREATE_NO_WINDOW = 0x08000000
+GUID_PATTERN = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 
 
 def _run_netsh(arguments: list[str]) -> str:
@@ -54,6 +58,15 @@ def get_connected_ssid() -> str | None:
             if ssid:
                 return ssid
     return None
+
+
+def has_wireless_adapter() -> bool:
+    """로캘과 관계없이 WLAN 인터페이스 GUID 존재 여부로 무선 랜카드를 판별한다."""
+    try:
+        output = _run_netsh(["show", "interfaces"])
+    except subprocess.SubprocessError:
+        return False
+    return GUID_PATTERN.search(output) is not None
 
 
 def read_wifi_profile(profile_name: str) -> tuple[str, str, str, bool]:
