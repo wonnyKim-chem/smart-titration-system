@@ -23,30 +23,23 @@ const SEGMENT_PATTERNS = {
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#processedFrame");
+const cameraStage = document.querySelector("#cameraStage");
 const cameraMessage = document.querySelector("#cameraMessage");
 const startButton = document.querySelector("#startCamera");
-const thresholdInput = document.querySelector("#threshold");
-const thresholdLabel = document.querySelector("#thresholdLabel");
+const resetDisplayButton = document.querySelector("#resetDisplay");
+const selectionStatus = document.querySelector("#selectionStatus");
 const digitCountInput = document.querySelector("#digitCount");
 const sampleInterval = document.querySelector("#sampleInterval");
-const darkDigitsButton = document.querySelector("#darkDigits");
-const lightDigitsButton = document.querySelector("#lightDigits");
 const livePh = document.querySelector("#livePh");
-const rawReading = document.querySelector("#rawReading");
-const confidenceOutput = document.querySelector("#confidence");
-const contourCountOutput = document.querySelector("#contourCount");
 const visionStatus = document.querySelector("#visionStatus");
 const networkStatus = document.querySelector("#networkStatus");
-const roiInputs = ["roiX", "roiY", "roiWidth", "roiHeight"].map((id) =>
-  document.querySelector(`#${id}`),
-);
 
 let cameraCapture = null;
 let sourceFrame = null;
 let animationFrame = null;
 let lastMeasurementAt = 0;
 let lastProcessedAt = 0;
-let useDarkDigits = true;
+let displayRegion = JSON.parse(localStorage.getItem("titration-ph-display-region") ?? "null");
 const recentReadings = [];
 
 const socket = new ReliableMeasurementSocket("ph", (connected) => {
@@ -55,30 +48,85 @@ const socket = new ReliableMeasurementSocket("ph", (connected) => {
 });
 socket.connect();
 
-function loadRoiSettings() {
-  const saved = JSON.parse(localStorage.getItem("titration-ph-roi") ?? "null");
-  if (saved) roiInputs.forEach((input) => (input.value = saved[input.id] ?? input.value));
-  updateRoiLabels();
-}
-
-function updateRoiLabels() {
-  const settings = {};
-  for (const input of roiInputs) {
-    document.querySelector(`#${input.id}Label`).textContent = input.value;
-    settings[input.id] = Number(input.value);
-  }
-  localStorage.setItem("titration-ph-roi", JSON.stringify(settings));
-}
-
 function getRoi(frame) {
-  const [xPercent, yPercent, widthPercent, heightPercent] = roiInputs.map((input) =>
-    Number(input.value),
-  );
-  const x = Math.round((frame.cols * xPercent) / 100);
-  const y = Math.round((frame.rows * yPercent) / 100);
-  const width = Math.max(20, Math.min(Math.round((frame.cols * widthPercent) / 100), frame.cols - x));
-  const height = Math.max(20, Math.min(Math.round((frame.rows * heightPercent) / 100), frame.rows - y));
+  if (!displayRegion) return null;
+  const x = Math.round(frame.cols * displayRegion.x);
+  const y = Math.round(frame.rows * displayRegion.y);
+  const width = Math.max(20, Math.min(Math.round(frame.cols * displayRegion.width), frame.cols - x));
+  const height = Math.max(20, Math.min(Math.round(frame.rows * displayRegion.height), frame.rows - y));
   return new cv.Rect(x, y, width, height);
+}
+
+function setDisplayRegion(rectangle, frame) {
+  displayRegion = {
+    x: rectangle.x / frame.cols,
+    y: rectangle.y / frame.rows,
+    width: rectangle.width / frame.cols,
+    height: rectangle.height / frame.rows,
+  };
+  localStorage.setItem("titration-ph-display-region", JSON.stringify(displayRegion));
+  recentReadings.length = 0;
+  resetDisplayButton.disabled = false;
+  selectionStatus.textContent = "LCD 영역을 찾았습니다. 숫자를 읽는 중입니다.";
+}
+
+function findDisplayAroundPoint(frame, pointX, pointY) {
+  const gray = new cv.Mat();
+  const blurred = new cv.Mat();
+  const edges = new cv.Mat();
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray, blurred, new cv.Size(7, 7), 0);
+  cv.Canny(blurred, edges, 35, 110);
+  cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+  let selected = null;
+  let selectedScore = -Infinity;
+  for (let index = 0; index < contours.size(); index += 1) {
+    const contour = contours.get(index);
+    const bounds = cv.boundingRect(contour);
+    contour.delete();
+    const areaRatio = (bounds.width * bounds.height) / (frame.cols * frame.rows);
+    const aspectRatio = bounds.width / Math.max(bounds.height, 1);
+    if (areaRatio < 0.015 || areaRatio > 0.72 || aspectRatio < 1.25 || aspectRatio > 6.5) continue;
+    const containsPoint =
+      pointX >= bounds.x && pointX <= bounds.x + bounds.width && pointY >= bounds.y && pointY <= bounds.y + bounds.height;
+    const centerX = bounds.x + bounds.width / 2;
+    const centerY = bounds.y + bounds.height / 2;
+    const distance = Math.hypot(centerX - pointX, centerY - pointY);
+    const score = (containsPoint ? frame.cols * 2 : 0) + bounds.width - distance * 0.8;
+    if (score > selectedScore) {
+      selected = bounds;
+      selectedScore = score;
+    }
+  }
+
+  gray.delete();
+  blurred.delete();
+  edges.delete();
+  contours.delete();
+  hierarchy.delete();
+
+  if (selected) {
+    const paddingX = Math.round(selected.width * 0.04);
+    const paddingY = Math.round(selected.height * 0.08);
+    return new cv.Rect(
+      Math.max(0, selected.x - paddingX),
+      Math.max(0, selected.y - paddingY),
+      Math.min(frame.cols - Math.max(0, selected.x - paddingX), selected.width + paddingX * 2),
+      Math.min(frame.rows - Math.max(0, selected.y - paddingY), selected.height + paddingY * 2),
+    );
+  }
+
+  const fallbackWidth = Math.round(frame.cols * 0.58);
+  const fallbackHeight = Math.round(frame.rows * 0.3);
+  return new cv.Rect(
+    Math.max(0, Math.min(frame.cols - fallbackWidth, Math.round(pointX - fallbackWidth / 2))),
+    Math.max(0, Math.min(frame.rows - fallbackHeight, Math.round(pointY - fallbackHeight / 2))),
+    fallbackWidth,
+    fallbackHeight,
+  );
 }
 
 function segmentOccupancy(binary, rectangle) {
@@ -175,52 +223,56 @@ function processFrame(timestamp) {
   cameraCapture.read(sourceFrame);
   const displayFrame = sourceFrame.clone();
   const roiRectangle = getRoi(sourceFrame);
-  const roi = sourceFrame.roi(roiRectangle);
-  const gray = new cv.Mat();
-  const blurred = new cv.Mat();
-  const binary = new cv.Mat();
-  cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
-  const thresholdMode = useDarkDigits ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
-  cv.threshold(blurred, binary, Number(thresholdInput.value), 255, thresholdMode);
+  if (roiRectangle) {
+    const roi = sourceFrame.roi(roiRectangle);
+    const gray = new cv.Mat();
+    const blurred = new cv.Mat();
+    const darkBinary = new cv.Mat();
+    const lightBinary = new cv.Mat();
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+    cv.threshold(blurred, darkBinary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+    cv.threshold(blurred, lightBinary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+    cv.morphologyEx(darkBinary, darkBinary, cv.MORPH_CLOSE, kernel);
+    cv.morphologyEx(lightBinary, lightBinary, cv.MORPH_CLOSE, kernel);
 
-  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-  cv.morphologyEx(binary, binary, cv.MORPH_CLOSE, kernel);
-  const contours = new cv.MatVector();
-  const hierarchy = new cv.Mat();
-  cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const darkReading = readDisplay(darkBinary);
+    const lightReading = readDisplay(lightBinary);
+    const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
+    const stableValue = stabiliseReading(reading.value);
 
-  const reading = readDisplay(binary);
-  const stableValue = stabiliseReading(reading.value);
-  rawReading.textContent = reading.value === null ? "--.--" : reading.value.toFixed(2);
-  confidenceOutput.textContent = `${Math.round(reading.confidence * 100)}%`;
-  contourCountOutput.textContent = String(contours.size());
-
-  cv.rectangle(
-    displayFrame,
-    new cv.Point(roiRectangle.x, roiRectangle.y),
-    new cv.Point(roiRectangle.x + roiRectangle.width, roiRectangle.y + roiRectangle.height),
-    new cv.Scalar(241, 200, 74, 255),
-    3,
-  );
-  if (stableValue !== null) {
-    livePh.textContent = `pH ${stableValue.toFixed(2)}`;
-    if (timestamp - lastMeasurementAt >= Number(sampleInterval.value)) {
-      lastMeasurementAt = timestamp;
-      recordPh(stableValue, Date.now());
+    cv.rectangle(
+      displayFrame,
+      new cv.Point(roiRectangle.x, roiRectangle.y),
+      new cv.Point(roiRectangle.x + roiRectangle.width, roiRectangle.y + roiRectangle.height),
+      new cv.Scalar(241, 200, 74, 255),
+      3,
+    );
+    if (stableValue !== null) {
+      livePh.textContent = `pH ${stableValue.toFixed(2)}`;
+      selectionStatus.textContent = `pH ${stableValue.toFixed(2)} 인식 중`;
+      if (timestamp - lastMeasurementAt >= Number(sampleInterval.value)) {
+        lastMeasurementAt = timestamp;
+        recordPh(stableValue, Date.now());
+      }
     }
+
+    roi.delete();
+    gray.delete();
+    blurred.delete();
+    darkBinary.delete();
+    lightBinary.delete();
+    kernel.delete();
   }
 
   cv.imshow(canvas, displayFrame);
   canvas.classList.add("active");
-  setCameraMessage(cameraMessage, "");
-  roi.delete();
-  gray.delete();
-  blurred.delete();
-  binary.delete();
-  kernel.delete();
-  contours.delete();
-  hierarchy.delete();
+  if (displayRegion) {
+    setCameraMessage(cameraMessage, "");
+  } else {
+    setCameraMessage(cameraMessage, "LCD 숫자 화면의 중앙을 한 번 터치하세요.");
+  }
   displayFrame.delete();
   animationFrame = requestAnimationFrame(processFrame);
 }
@@ -237,6 +289,8 @@ async function startCamera() {
     sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
     cameraCapture = new cv.VideoCapture(video);
     startButton.querySelector("span").textContent = "카메라 실행 중";
+    selectionStatus.textContent = displayRegion ? "저장된 LCD 영역을 확인하는 중입니다." : "카메라 화면에서 LCD 숫자를 터치하세요.";
+    resetDisplayButton.disabled = false;
     animationFrame = requestAnimationFrame(processFrame);
   } catch (error) {
     startButton.disabled = false;
@@ -246,17 +300,22 @@ async function startCamera() {
   }
 }
 
-function setPolarity(dark) {
-  useDarkDigits = dark;
-  darkDigitsButton.classList.toggle("active", dark);
-  lightDigitsButton.classList.toggle("active", !dark);
-}
-
 startButton.addEventListener("click", startCamera);
-darkDigitsButton.addEventListener("click", () => setPolarity(true));
-lightDigitsButton.addEventListener("click", () => setPolarity(false));
-thresholdInput.addEventListener("input", () => (thresholdLabel.textContent = thresholdInput.value));
-roiInputs.forEach((input) => input.addEventListener("input", updateRoiLabels));
+cameraStage.addEventListener("pointerup", (event) => {
+  if (!sourceFrame || !cameraCapture) return;
+  const bounds = canvas.getBoundingClientRect();
+  const pointX = ((event.clientX - bounds.left) / bounds.width) * sourceFrame.cols;
+  const pointY = ((event.clientY - bounds.top) / bounds.height) * sourceFrame.rows;
+  setDisplayRegion(findDisplayAroundPoint(sourceFrame, pointX, pointY), sourceFrame);
+});
+resetDisplayButton.addEventListener("click", () => {
+  displayRegion = null;
+  localStorage.removeItem("titration-ph-display-region");
+  recentReadings.length = 0;
+  livePh.textContent = "pH --.--";
+  selectionStatus.textContent = "카메라 화면에서 LCD 숫자를 터치하세요.";
+  setCameraMessage(cameraMessage, "LCD 숫자 화면의 중앙을 한 번 터치하세요.");
+});
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);
   sourceFrame?.delete();
@@ -264,7 +323,6 @@ window.addEventListener("beforeunload", () => {
   socket.stop();
 });
 
-loadRoiSettings();
 waitForOpenCv(visionStatus).catch(() => {
   visionStatus.textContent = "로드 실패";
 });

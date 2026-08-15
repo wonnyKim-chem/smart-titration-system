@@ -11,28 +11,40 @@ import {
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#processedFrame");
 const cameraMessage = document.querySelector("#cameraMessage");
+const tiltGuide = document.querySelector("#tiltGuide");
 const startButton = document.querySelector("#startCamera");
-const zeroButton = document.querySelector("#setZero");
-const referenceButton = document.querySelector("#setReference");
-const referenceInput = document.querySelector("#referenceVolume");
+const restartCalibrationButton = document.querySelector("#restartCalibration");
+const calibrationStatus = document.querySelector("#calibrationStatus");
 const thresholdInput = document.querySelector("#threshold");
 const thresholdLabel = document.querySelector("#thresholdLabel");
 const modeInput = document.querySelector("#detectionMode");
+const modeHelp = document.querySelector("#modeHelp");
 const sampleInterval = document.querySelector("#sampleInterval");
-const currentYOutput = document.querySelector("#currentY");
-const scaleOutput = document.querySelector("#scaleValue");
-const orientationOutput = document.querySelector("#orientationValue");
 const visionStatus = document.querySelector("#visionStatus");
 const liveVolume = document.querySelector("#liveVolume");
 const networkStatus = document.querySelector("#networkStatus");
+const introDialog = document.querySelector("#introDialog");
+const introConfirm = document.querySelector("#introConfirm");
+const calibrationDialog = document.querySelector("#calibrationDialog");
+const calibrationForm = document.querySelector("#calibrationForm");
+const calibrationStepLabel = document.querySelector("#calibrationStepLabel");
+const calibrationTitle = document.querySelector("#calibrationTitle");
+const calibrationPrompt = document.querySelector("#calibrationPrompt");
+const actualVolumeInput = document.querySelector("#actualVolume");
+const completionDialog = document.querySelector("#completionDialog");
+const completionConfirm = document.querySelector("#completionConfirm");
 
 const calibrationKey = "titration-burette-calibration";
-const calibration = JSON.parse(localStorage.getItem(calibrationKey) ?? "null") ?? {
-  zeroY: null,
-  referenceY: null,
-  referenceVolume: null,
-  scale: null,
-};
+const savedCalibration = JSON.parse(localStorage.getItem(calibrationKey) ?? "null");
+const calibration = savedCalibration?.point1Y !== undefined
+  ? savedCalibration
+  : {
+      point1Y: savedCalibration?.zeroY ?? null,
+      point1Volume: 0,
+      point2Y: savedCalibration?.referenceY ?? null,
+      point2Volume: savedCalibration?.referenceVolume ?? null,
+      scale: savedCalibration?.scale ?? null,
+    };
 
 let currentY = null;
 let currentVolume = null;
@@ -41,6 +53,10 @@ let sourceFrame = null;
 let animationFrame = null;
 let lastMeasurementAt = 0;
 let lastProcessedAt = 0;
+let calibrationStage = calibration.scale ? "complete" : "waiting-first";
+let tutorialOpen = false;
+let calibrationDialogOpen = false;
+const stableMeniscusPoints = [];
 const orientation = { beta: 0, gamma: 0 };
 
 const socket = new ReliableMeasurementSocket("burette", (connected) => {
@@ -51,22 +67,82 @@ socket.connect();
 
 function saveCalibration() {
   localStorage.setItem(calibrationKey, JSON.stringify(calibration));
-  scaleOutput.textContent = calibration.scale ? `${calibration.scale.toFixed(5)} mL/px` : "--";
 }
 
 function updateCalibration() {
   if (
-    calibration.zeroY === null ||
-    calibration.referenceY === null ||
-    !calibration.referenceVolume ||
-    calibration.referenceY === calibration.zeroY
+    calibration.point1Y === null ||
+    calibration.point2Y === null ||
+    calibration.point1Volume === null ||
+    calibration.point2Volume === null ||
+    calibration.point2Y === calibration.point1Y
   ) {
     calibration.scale = null;
   } else {
-    calibration.scale =
-      calibration.referenceVolume / Math.abs(calibration.referenceY - calibration.zeroY);
+    calibration.scale = (calibration.point2Volume - calibration.point1Volume) /
+      (calibration.point2Y - calibration.point1Y);
   }
   saveCalibration();
+}
+
+function resetCalibration() {
+  Object.assign(calibration, {
+    point1Y: null,
+    point1Volume: null,
+    point2Y: null,
+    point2Volume: null,
+    scale: null,
+  });
+  calibrationStage = "waiting-first";
+  stableMeniscusPoints.length = 0;
+  currentVolume = null;
+  liveVolume.textContent = "--.-- mL";
+  calibrationStatus.textContent = "메니스커스를 찾는 중입니다. 뷰렛을 움직이지 마세요.";
+  saveCalibration();
+}
+
+function trackStableMeniscus(yPosition) {
+  if (yPosition === null) {
+    stableMeniscusPoints.length = 0;
+    return false;
+  }
+  stableMeniscusPoints.push(yPosition);
+  if (stableMeniscusPoints.length > 12) stableMeniscusPoints.shift();
+  if (stableMeniscusPoints.length < 10) return false;
+  return Math.max(...stableMeniscusPoints) - Math.min(...stableMeniscusPoints) < 3.5;
+}
+
+function showCalibrationDialog(step) {
+  if (calibrationDialogOpen || tutorialOpen) return;
+  calibrationDialogOpen = true;
+  if (step === 1) {
+    calibrationStepLabel.textContent = "보정 1단계";
+    calibrationTitle.textContent = "메니스커스를 인식했습니다";
+    calibrationPrompt.textContent = "보정 중입니다. 현재 뷰렛이 가리키는 실제 부피가 몇 mL인지 입력해주세요.";
+    actualVolumeInput.value = "0.00";
+  } else {
+    calibrationStepLabel.textContent = "보정 2단계";
+    calibrationTitle.textContent = "두 번째 위치를 인식했습니다";
+    calibrationPrompt.textContent = "콕을 잠갔다면 현재 뷰렛이 가리키는 실제 부피를 입력해주세요.";
+    actualVolumeInput.value = calibration.point1Volume !== null
+      ? (Number(calibration.point1Volume) + 5).toFixed(2)
+      : "5.00";
+  }
+  calibrationDialog.showModal();
+  requestAnimationFrame(() => actualVolumeInput.select());
+}
+
+function updateCalibrationTutorial(isStable) {
+  if (tutorialOpen || calibrationDialogOpen || !isStable) return;
+  if (calibrationStage === "waiting-first") {
+    showCalibrationDialog(1);
+  } else if (
+    calibrationStage === "waiting-second" &&
+    calibration.point1Y !== null &&
+    Math.abs(currentY - calibration.point1Y) >= 24
+  ) {
+    showCalibrationDialog(2);
+  }
 }
 
 async function enableOrientation() {
@@ -83,7 +159,7 @@ async function enableOrientation() {
   window.addEventListener("deviceorientation", (event) => {
     orientation.beta = Number(event.beta ?? 0);
     orientation.gamma = Number(event.gamma ?? 0);
-    orientationOutput.textContent = `${orientation.gamma.toFixed(1)}°`;
+    tiltGuide.classList.toggle("hidden", Math.abs(orientation.gamma) < 7);
   });
 }
 
@@ -258,19 +334,27 @@ function processFrame(timestamp) {
   cameraCapture.read(sourceFrame);
   const rectified = rectifyFrame(sourceFrame);
   currentY = detectMeniscus(rectified);
+  const isStable = trackStableMeniscus(currentY);
 
   if (currentY !== null) {
-    currentYOutput.textContent = `${currentY.toFixed(1)} px`;
-    zeroButton.disabled = false;
-    referenceButton.disabled = false;
     if (calibration.scale !== null) {
-      currentVolume = (currentY - calibration.zeroY) * calibration.scale;
+      currentVolume = calibration.point1Volume + (currentY - calibration.point1Y) * calibration.scale;
       liveVolume.textContent = `${currentVolume.toFixed(2)} mL`;
+      calibrationStatus.textContent = "보정 완료 · 부피를 기록하고 있습니다.";
       if (timestamp - lastMeasurementAt >= Number(sampleInterval.value)) {
         lastMeasurementAt = timestamp;
         recordVolume(Date.now());
       }
+    } else if (calibrationStage === "waiting-second") {
+      calibrationStatus.textContent = "콕을 열어 액체를 3~5 mL 정도 배출한 뒤 다시 잠가주세요.";
+    } else {
+      calibrationStatus.textContent = isStable
+        ? "메니스커스를 인식했습니다."
+        : "메니스커스를 찾는 중입니다. 뷰렛을 움직이지 마세요.";
     }
+    updateCalibrationTutorial(isStable);
+  } else if (!tutorialOpen) {
+    calibrationStatus.textContent = "액체 표면을 찾지 못했습니다. 눈금과 메니스커스가 선명하게 보이도록 맞춰주세요.";
   }
 
   cv.imshow(canvas, rectified);
@@ -292,6 +376,9 @@ async function startCamera() {
     sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
     cameraCapture = new cv.VideoCapture(video);
     startButton.querySelector("span").textContent = "카메라 실행 중";
+    restartCalibrationButton.disabled = false;
+    tutorialOpen = true;
+    introDialog.showModal();
     animationFrame = requestAnimationFrame(processFrame);
   } catch (error) {
     startButton.disabled = false;
@@ -305,14 +392,56 @@ startButton.addEventListener("click", startCamera);
 thresholdInput.addEventListener("input", () => {
   thresholdLabel.textContent = thresholdInput.value;
 });
-zeroButton.addEventListener("click", () => {
-  calibration.zeroY = currentY;
-  updateCalibration();
+modeInput.addEventListener("change", () => {
+  modeHelp.innerHTML = modeInput.value === "canny"
+    ? "<strong>Canny</strong>는 투명한 액체의 가는 경계가 보일 때 적합합니다. 일반적인 조명에서는 이 설정을 먼저 사용하세요."
+    : "<strong>밝기 이진화</strong>는 액체와 배경의 밝기 차이가 크지만 반사광 때문에 Canny 선이 끊길 때 사용하세요.";
 });
-referenceButton.addEventListener("click", () => {
-  calibration.referenceY = currentY;
-  calibration.referenceVolume = Number(referenceInput.value);
-  updateCalibration();
+introConfirm.addEventListener("click", () => {
+  tutorialOpen = false;
+  introDialog.close();
+  calibrationStatus.textContent = calibration.scale
+    ? "저장된 보정을 확인하는 중입니다."
+    : "메니스커스를 찾는 중입니다. 뷰렛을 움직이지 마세요.";
+});
+calibrationForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const actualVolume = Number(actualVolumeInput.value);
+  if (!Number.isFinite(actualVolume) || currentY === null) return;
+  if (calibrationStage === "waiting-first") {
+    calibration.point1Y = currentY;
+    calibration.point1Volume = actualVolume;
+    calibrationStage = "waiting-second";
+    calibrationStatus.textContent = "콕을 열어 액체를 3~5 mL 정도 배출한 뒤 다시 잠가주세요.";
+  } else if (calibrationStage === "waiting-second") {
+    calibration.point2Y = currentY;
+    calibration.point2Volume = actualVolume;
+    updateCalibration();
+    if (calibration.scale === null || Math.abs(actualVolume - calibration.point1Volume) < 0.1) {
+      calibration.point2Y = null;
+      calibration.point2Volume = null;
+      calibrationStatus.textContent = "두 지점의 부피가 달라야 합니다. 조금 더 배출한 뒤 다시 입력해주세요.";
+    } else {
+      calibrationStage = "complete";
+      completionDialog.showModal();
+    }
+  }
+  stableMeniscusPoints.length = 0;
+  calibrationDialogOpen = false;
+  calibrationDialog.close();
+  saveCalibration();
+});
+restartCalibrationButton.addEventListener("click", () => {
+  resetCalibration();
+  tutorialOpen = true;
+  introDialog.showModal();
+});
+completionConfirm.addEventListener("click", () => {
+  completionDialog.close();
+  calibrationStatus.textContent = "보정 완료 · 부피를 기록하고 있습니다.";
+});
+[introDialog, calibrationDialog, completionDialog].forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => event.preventDefault());
 });
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);

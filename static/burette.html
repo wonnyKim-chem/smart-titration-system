@@ -26,30 +26,46 @@
         <video id="camera" playsinline muted></video>
         <canvas id="processedFrame"></canvas>
         <p id="cameraMessage" class="camera-message">카메라 시작을 눌러 영상을 연결하세요.</p>
+        <div id="tiltGuide" class="tilt-guide hidden" aria-hidden="true">
+          <span></span><p>휴대폰을 세로선과 나란히 맞춰주세요</p>
+        </div>
         <div class="camera-overlay">
           <output id="liveVolume" class="live-value">--.-- mL</output>
         </div>
       </section>
 
       <aside class="control-panel">
-        <section class="control-section">
-          <h2>카메라</h2>
+        <section class="control-section workflow-section">
+          <p class="step-label">뷰렛 설정</p>
+          <h2>메니스커스를 비춰주세요</h2>
+          <p class="section-copy">뷰렛과 눈금 숫자가 함께 보이도록 고정하면 보정 과정을 차례로 안내합니다.</p>
           <div class="control-grid">
             <button id="startCamera" class="wide" type="button">
               <i data-lucide="camera"></i><span>카메라 시작</span>
             </button>
+            <button id="restartCalibration" class="secondary wide" type="button" disabled>
+              <i data-lucide="rotate-ccw"></i><span>보정 다시 하기</span>
+            </button>
+          </div>
+          <div id="calibrationStatus" class="friendly-status">카메라 연결 전</div>
+        </section>
+
+        <details class="advanced-settings">
+          <summary>메니스커스 인식이 잘 안 될 때</summary>
+          <div class="advanced-body">
             <label>
-              처리 방식
+              검출 방식
               <select id="detectionMode">
-                <option value="canny">Canny</option>
-                <option value="threshold">이진화</option>
+                <option value="canny">Canny 윤곽선</option>
+                <option value="threshold">밝기 이진화</option>
               </select>
             </label>
+            <p id="modeHelp" class="option-help"><strong>Canny</strong>는 투명한 액체의 가는 경계가 보일 때 적합합니다. 일반적인 조명에서는 이 설정을 먼저 사용하세요.</p>
             <label>
-              임계값 <output id="thresholdLabel">90</output>
+              경계 민감도 <output id="thresholdLabel">90</output>
               <input id="threshold" type="range" min="20" max="220" value="90" />
             </label>
-            <label class="wide">
+            <label>
               기록 주기
               <select id="sampleInterval">
                 <option value="250">0.25초</option>
@@ -58,36 +74,46 @@
               </select>
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="control-section">
-          <h2>2점 보정</h2>
-          <div class="control-grid">
-            <button id="setZero" class="secondary" type="button" disabled>
-              <i data-lucide="circle-dot"></i><span>0 mL 설정</span>
-            </button>
-            <label>
-              기준 부피 (mL)
-              <input id="referenceVolume" type="number" value="10.00" min="0.01" step="0.01" />
-            </label>
-            <button id="setReference" class="wide" type="button" disabled>
-              <i data-lucide="ruler"></i><span>기준점 설정</span>
-            </button>
-          </div>
-        </section>
-
-        <div class="metric-row">
-          <div class="metric"><span>Y 현재</span><strong id="currentY">-- px</strong></div>
-          <div class="metric"><span>환산 비율</span><strong id="scaleValue">--</strong></div>
-          <div class="metric"><span>기울기</span><strong id="orientationValue">--°</strong></div>
-          <div class="metric"><span>OpenCV</span><strong id="visionStatus">로딩</strong></div>
-        </div>
+        <span id="visionStatus" class="hidden">로딩</span>
 
         <a class="button-link secondary" href="/">
           <i data-lucide="chart-no-axes-combined"></i><span>분석 대시보드</span>
         </a>
       </aside>
     </main>
+
+    <dialog id="introDialog" class="guided-dialog">
+      <div class="dialog-icon"><i data-lucide="flask-conical"></i></div>
+      <p class="step-label">시작 전 준비</p>
+      <h2>뷰렛을 화면에 맞춰주세요</h2>
+      <p>뷰렛에 적정용액을 넣고 콕을 잠근 뒤, 메니스커스(액체 표면)와 눈금 숫자가 함께 보이도록 비춰주세요.</p>
+      <p>휴대폰을 움직이지 않도록 고정하면 액체 표면을 자동으로 찾습니다.</p>
+      <button id="introConfirm" type="button">준비됐어요</button>
+    </dialog>
+
+    <dialog id="calibrationDialog" class="guided-dialog">
+      <form id="calibrationForm" method="dialog">
+        <div class="dialog-icon"><i data-lucide="ruler"></i></div>
+        <p id="calibrationStepLabel" class="step-label">보정 1단계</p>
+        <h2 id="calibrationTitle">메니스커스를 인식했습니다</h2>
+        <p id="calibrationPrompt">보정 중입니다. 현재 뷰렛의 실제 부피가 몇 mL인지 입력해주세요.</p>
+        <label>
+          실제 부피 (mL)
+          <input id="actualVolume" type="number" value="0.00" min="0" max="100" step="0.01" inputmode="decimal" required />
+        </label>
+        <button type="submit">이 부피로 설정</button>
+      </form>
+    </dialog>
+
+    <dialog id="completionDialog" class="guided-dialog">
+      <div class="dialog-icon success"><i data-lucide="check"></i></div>
+      <p class="step-label">보정 완료</p>
+      <h2>측정을 시작합니다</h2>
+      <p>이제 뷰렛의 부피가 자동으로 기록됩니다. 휴대폰과 뷰렛의 위치를 움직이지 마세요.</p>
+      <button id="completionConfirm" type="button">확인</button>
+    </dialog>
 
     <script type="module" src="/static/burette.js"></script>
   </body>

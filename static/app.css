@@ -238,11 +238,42 @@ h2 {
   text-align: center;
   font-size: 0.9rem;
   line-height: 1.6;
+  pointer-events: none;
 }
 
 .camera-message[data-state="error"] {
   border-color: #e36a5f;
   background: rgba(91, 24, 19, 0.94);
+}
+
+.touch-camera {
+  cursor: crosshair;
+  touch-action: manipulation;
+}
+
+.tilt-guide {
+  position: absolute;
+  z-index: 3;
+  inset: 12% 0 auto;
+  display: grid;
+  justify-items: center;
+  color: #ffffff;
+  pointer-events: none;
+}
+
+.tilt-guide span {
+  width: 2px;
+  height: min(52vh, 320px);
+  background: rgba(241, 200, 74, 0.9);
+  box-shadow: 0 0 0 1px rgba(23, 32, 31, 0.4);
+}
+
+.tilt-guide p {
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  color: #ffffff;
+  background: rgba(10, 16, 15, 0.82);
+  font-size: 0.78rem;
 }
 
 .camera-overlay {
@@ -277,6 +308,128 @@ h2 {
   padding: 16px;
   border-top: 3px solid var(--ink);
   background: var(--surface);
+}
+
+.workflow-section {
+  border-top-color: var(--highlight);
+}
+
+.workflow-section h2 {
+  margin-bottom: 8px;
+  font-size: 1.08rem;
+}
+
+.step-label {
+  margin: 0 0 5px;
+  color: var(--accent-strong);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.section-copy {
+  margin-bottom: 15px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+
+.friendly-status {
+  margin-top: 12px;
+  padding: 11px 12px;
+  border-left: 4px solid var(--accent);
+  color: var(--ink);
+  background: var(--surface-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.advanced-settings {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.advanced-settings summary {
+  padding: 13px 15px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advanced-settings[open] summary {
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.advanced-body {
+  display: grid;
+  padding: 15px;
+  gap: 12px;
+}
+
+.option-help {
+  margin: 0;
+  padding: 10px 11px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.guided-dialog {
+  width: min(90vw, 430px);
+  padding: 24px;
+  border: 0;
+  border-top: 7px solid var(--highlight);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--surface);
+  font-family: "Noto Sans KR", sans-serif;
+}
+
+.guided-dialog::backdrop {
+  background: rgba(10, 16, 15, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.guided-dialog h2 {
+  margin-bottom: 10px;
+  font-size: 1.22rem;
+}
+
+.guided-dialog p:not(.step-label) {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.guided-dialog form {
+  display: grid;
+  gap: 12px;
+}
+
+.guided-dialog button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.dialog-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 15px;
+  place-items: center;
+  border: 2px solid var(--ink);
+  color: var(--ink);
+  background: var(--highlight);
+}
+
+.dialog-icon.success {
+  color: #ffffff;
+  background: var(--accent);
 }
 
 .control-grid {
@@ -411,7 +564,22 @@ label {
   }
 
   .camera-stage {
-    min-height: 54vh;
+    min-height: 300px;
+    height: 42svh;
+    max-height: 390px;
+  }
+
+  .workspace {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .control-panel {
+    gap: 10px;
+  }
+
+  .control-section {
+    padding: 14px;
   }
 
   .control-grid {

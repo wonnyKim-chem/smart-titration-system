@@ -22,7 +22,7 @@
     </header>
 
     <main class="workspace camera-layout">
-      <section class="camera-stage" aria-label="pH 계측기 카메라 영상">
+      <section id="cameraStage" class="camera-stage touch-camera" aria-label="pH 계측기 카메라 영상">
         <video id="camera" playsinline muted></video>
         <canvas id="processedFrame"></canvas>
         <p id="cameraMessage" class="camera-message">카메라 시작을 눌러 영상을 연결하세요.</p>
@@ -32,14 +32,26 @@
       </section>
 
       <aside class="control-panel">
-        <section class="control-section">
-          <h2>LCD 인식</h2>
+        <section class="control-section workflow-section">
+          <p class="step-label">간편 설정</p>
+          <h2>계측기 숫자를 비춰주세요</h2>
+          <p class="section-copy">카메라를 시작한 뒤 화면에서 LCD 숫자 부분을 한 번 터치하면 인식 영역을 자동으로 찾습니다.</p>
           <div class="control-grid">
             <button id="startCamera" class="wide" type="button">
               <i data-lucide="scan-line"></i><span>카메라 시작</span>
             </button>
+            <button id="resetDisplay" class="secondary wide" type="button" disabled>
+              <i data-lucide="focus"></i><span>LCD 영역 다시 선택</span>
+            </button>
+          </div>
+          <div id="selectionStatus" class="friendly-status">카메라 연결 전</div>
+        </section>
+
+        <details class="advanced-settings">
+          <summary>인식이 잘 안 될 때</summary>
+          <div class="advanced-body control-grid">
             <label>
-              숫자 자릿수
+              표시 자릿수
               <select id="digitCount">
                 <option value="3" selected>3자리 (7.00)</option>
                 <option value="4">4자리 (12.34)</option>
@@ -53,45 +65,10 @@
                 <option value="1000">1초</option>
               </select>
             </label>
-            <label class="wide">
-              이진화 임계값 <output id="thresholdLabel">110</output>
-              <input id="threshold" type="range" min="20" max="235" value="110" />
-            </label>
-            <div class="segmented wide" aria-label="LCD 명암">
-              <button id="darkDigits" class="active" type="button">어두운 숫자</button>
-              <button id="lightDigits" type="button">밝은 숫자</button>
-            </div>
           </div>
-        </section>
+        </details>
 
-        <section class="control-section">
-          <h2>인식 영역 (%)</h2>
-          <div class="control-grid">
-            <label>
-              X <output id="roiXLabel">20</output>
-              <input id="roiX" type="range" min="0" max="75" value="20" />
-            </label>
-            <label>
-              Y <output id="roiYLabel">25</output>
-              <input id="roiY" type="range" min="0" max="75" value="25" />
-            </label>
-            <label>
-              너비 <output id="roiWidthLabel">60</output>
-              <input id="roiWidth" type="range" min="20" max="100" value="60" />
-            </label>
-            <label>
-              높이 <output id="roiHeightLabel">45</output>
-              <input id="roiHeight" type="range" min="15" max="100" value="45" />
-            </label>
-          </div>
-        </section>
-
-        <div class="metric-row">
-          <div class="metric"><span>원시 판독</span><strong id="rawReading">--.--</strong></div>
-          <div class="metric"><span>안정도</span><strong id="confidence">0%</strong></div>
-          <div class="metric"><span>윤곽 수</span><strong id="contourCount">0</strong></div>
-          <div class="metric"><span>OpenCV</span><strong id="visionStatus">로딩</strong></div>
-        </div>
+        <span id="visionStatus" class="hidden">로딩</span>
 
         <a class="button-link secondary" href="/">
           <i data-lucide="chart-no-axes-combined"></i><span>분석 대시보드</span>
