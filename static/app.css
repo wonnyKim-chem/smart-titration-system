@@ -215,6 +215,34 @@ h2 {
 .camera-stage canvas {
   position: relative;
   z-index: 1;
+  visibility: hidden;
+}
+
+.camera-stage canvas.active {
+  visibility: visible;
+}
+
+.camera-message {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  left: 50%;
+  width: min(88%, 520px);
+  margin: 0;
+  padding: 14px 16px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: var(--radius);
+  color: #ffffff;
+  background: rgba(10, 16, 15, 0.88);
+  text-align: center;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.camera-message[data-state="error"] {
+  border-color: #e36a5f;
+  background: rgba(91, 24, 19, 0.94);
 }
 
 .camera-overlay {

@@ -1,8 +1,16 @@
 import { createMeasurementId } from "./offline-store.js";
 import { ReliableMeasurementSocket } from "./reliable-socket.js";
+import {
+  assertCameraSupport,
+  describeCameraError,
+  setCameraMessage,
+  startEnvironmentCamera,
+  waitForOpenCv,
+} from "./camera-support.js";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#processedFrame");
+const cameraMessage = document.querySelector("#cameraMessage");
 const startButton = document.querySelector("#startCamera");
 const zeroButton = document.querySelector("#setZero");
 const referenceButton = document.querySelector("#setReference");
@@ -32,6 +40,7 @@ let cameraCapture = null;
 let sourceFrame = null;
 let animationFrame = null;
 let lastMeasurementAt = 0;
+let lastProcessedAt = 0;
 const orientation = { beta: 0, gamma: 0 };
 
 const socket = new ReliableMeasurementSocket("burette", (connected) => {
@@ -60,25 +69,16 @@ function updateCalibration() {
   saveCalibration();
 }
 
-function waitForOpenCv() {
-  return new Promise((resolve) => {
-    const check = () => {
-      if (globalThis.cv?.Mat) {
-        visionStatus.textContent = "준비";
-        resolve();
-      } else {
-        setTimeout(check, 100);
-      }
-    };
-    check();
-  });
-}
-
 async function enableOrientation() {
   if (typeof DeviceOrientationEvent === "undefined") return;
-  if (typeof DeviceOrientationEvent.requestPermission === "function") {
-    const permission = await DeviceOrientationEvent.requestPermission();
-    if (permission !== "granted") return;
+  try {
+    if (typeof DeviceOrientationEvent.requestPermission === "function") {
+      const permission = await DeviceOrientationEvent.requestPermission();
+      if (permission !== "granted") return;
+    }
+  } catch {
+    // 동작 센서 권한이 없어도 카메라와 영상 기반 원근 보정은 계속 사용한다.
+    return;
   }
   window.addEventListener("deviceorientation", (event) => {
     orientation.beta = Number(event.beta ?? 0);
@@ -250,6 +250,11 @@ async function recordVolume(timestamp) {
 
 function processFrame(timestamp) {
   if (!cameraCapture || !sourceFrame) return;
+  if (timestamp - lastProcessedAt < 66) {
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
+  lastProcessedAt = timestamp;
   cameraCapture.read(sourceFrame);
   const rectified = rectifyFrame(sourceFrame);
   currentY = detectMeniscus(rectified);
@@ -269,20 +274,19 @@ function processFrame(timestamp) {
   }
 
   cv.imshow(canvas, rectified);
+  canvas.classList.add("active");
+  setCameraMessage(cameraMessage, "");
   rectified.delete();
   animationFrame = requestAnimationFrame(processFrame);
 }
 
 async function startCamera() {
   startButton.disabled = true;
+  setCameraMessage(cameraMessage, "카메라 권한과 영상을 확인하는 중입니다.");
   try {
-    await Promise.all([waitForOpenCv(), enableOrientation()]);
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
-    video.srcObject = stream;
-    await video.play();
+    assertCameraSupport();
+    await Promise.all([waitForOpenCv(visionStatus), enableOrientation()]);
+    await startEnvironmentCamera(video);
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
@@ -293,6 +297,7 @@ async function startCamera() {
     startButton.disabled = false;
     startButton.querySelector("span").textContent = "카메라 다시 시작";
     visionStatus.textContent = error.name === "NotAllowedError" ? "권한 필요" : "오류";
+    setCameraMessage(cameraMessage, describeCameraError(error), "error");
   }
 }
 
@@ -317,5 +322,11 @@ window.addEventListener("beforeunload", () => {
 });
 
 saveCalibration();
-waitForOpenCv();
+waitForOpenCv(visionStatus).catch(() => {
+  visionStatus.textContent = "로드 실패";
+});
+if (!globalThis.isSecureContext) {
+  setCameraMessage(cameraMessage, describeCameraError({ name: "InsecureContextError" }), "error");
+  startButton.disabled = true;
+}
 globalThis.addEventListener("load", () => globalThis.lucide?.createIcons());

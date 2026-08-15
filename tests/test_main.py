@@ -44,7 +44,9 @@ def test_analysis_finds_logistic_equivalence_point() -> None:
 
 def test_health_and_static_pages() -> None:
     with TestClient(app) as client:
-        assert client.get("/api/health").json()["status"] == "ok"
+        health_response = client.get("/api/health")
+        assert health_response.json()["status"] == "ok"
+        assert health_response.headers["permissions-policy"] == "camera=(self), microphone=()"
         assert client.get("/").status_code == 200
         assert client.get("/burette").status_code == 200
         assert client.get("/ph-meter").status_code == 200

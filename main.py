@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 import numpy as np
 import qrcode
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.signal import find_peaks, savgol_filter
@@ -222,6 +222,13 @@ app = FastAPI(title="Smart Titration Curve Analysis System", version="1.0.0")
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def add_browser_security_headers(request: Request, call_next: Any) -> Any:
+    response = await call_next(request)
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=()"
+    return response
 
 
 @app.get("/api/health")

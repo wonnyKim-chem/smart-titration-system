@@ -1,5 +1,12 @@
 import { createMeasurementId } from "./offline-store.js";
 import { ReliableMeasurementSocket } from "./reliable-socket.js";
+import {
+  assertCameraSupport,
+  describeCameraError,
+  setCameraMessage,
+  startEnvironmentCamera,
+  waitForOpenCv,
+} from "./camera-support.js";
 
 const SEGMENT_PATTERNS = {
   0: [1, 1, 1, 1, 1, 1, 0],
@@ -16,6 +23,7 @@ const SEGMENT_PATTERNS = {
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#processedFrame");
+const cameraMessage = document.querySelector("#cameraMessage");
 const startButton = document.querySelector("#startCamera");
 const thresholdInput = document.querySelector("#threshold");
 const thresholdLabel = document.querySelector("#thresholdLabel");
@@ -37,6 +45,7 @@ let cameraCapture = null;
 let sourceFrame = null;
 let animationFrame = null;
 let lastMeasurementAt = 0;
+let lastProcessedAt = 0;
 let useDarkDigits = true;
 const recentReadings = [];
 
@@ -45,20 +54,6 @@ const socket = new ReliableMeasurementSocket("ph", (connected) => {
   networkStatus.classList.toggle("online", connected);
 });
 socket.connect();
-
-function waitForOpenCv() {
-  return new Promise((resolve) => {
-    const check = () => {
-      if (globalThis.cv?.Mat) {
-        visionStatus.textContent = "준비";
-        resolve();
-      } else {
-        setTimeout(check, 100);
-      }
-    };
-    check();
-  });
-}
 
 function loadRoiSettings() {
   const saved = JSON.parse(localStorage.getItem("titration-ph-roi") ?? "null");
@@ -172,6 +167,11 @@ async function recordPh(value, timestamp) {
 
 function processFrame(timestamp) {
   if (!cameraCapture || !sourceFrame) return;
+  if (timestamp - lastProcessedAt < 66) {
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
+  lastProcessedAt = timestamp;
   cameraCapture.read(sourceFrame);
   const displayFrame = sourceFrame.clone();
   const roiRectangle = getRoi(sourceFrame);
@@ -212,6 +212,8 @@ function processFrame(timestamp) {
   }
 
   cv.imshow(canvas, displayFrame);
+  canvas.classList.add("active");
+  setCameraMessage(cameraMessage, "");
   roi.delete();
   gray.delete();
   blurred.delete();
@@ -225,14 +227,11 @@ function processFrame(timestamp) {
 
 async function startCamera() {
   startButton.disabled = true;
+  setCameraMessage(cameraMessage, "카메라 권한과 영상을 확인하는 중입니다.");
   try {
-    await waitForOpenCv();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
-    video.srcObject = stream;
-    await video.play();
+    assertCameraSupport();
+    await waitForOpenCv(visionStatus);
+    await startEnvironmentCamera(video);
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
@@ -243,6 +242,7 @@ async function startCamera() {
     startButton.disabled = false;
     startButton.querySelector("span").textContent = "카메라 다시 시작";
     visionStatus.textContent = error.name === "NotAllowedError" ? "권한 필요" : "오류";
+    setCameraMessage(cameraMessage, describeCameraError(error), "error");
   }
 }
 
@@ -265,5 +265,11 @@ window.addEventListener("beforeunload", () => {
 });
 
 loadRoiSettings();
-waitForOpenCv();
+waitForOpenCv(visionStatus).catch(() => {
+  visionStatus.textContent = "로드 실패";
+});
+if (!globalThis.isSecureContext) {
+  setCameraMessage(cameraMessage, describeCameraError({ name: "InsecureContextError" }), "error");
+  startButton.disabled = true;
+}
 globalThis.addEventListener("load", () => globalThis.lucide?.createIcons());
