@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import ssl
 import sys
 import time
@@ -12,6 +13,7 @@ import qrcode
 import uvicorn
 from PySide6.QtCore import QProcess, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QFont, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -36,6 +38,7 @@ from main import app, get_default_certificate_paths, get_local_ip, hub, resolve_
 
 APP_NAME = "Smart Titration"
 DEFAULT_PORT = 8000
+INSTANCE_SERVER_NAME = "SmartTitrationServerLauncher"
 
 
 def resource_path(filename: str) -> Path:
@@ -91,6 +94,20 @@ def inspect_certificate(host: str) -> tuple[bool, str]:
         return False, str(error)
 
 
+def is_port_available(port: int) -> bool:
+    """서버 시작 전에 지정 포트를 다른 프로세스가 점유했는지 확인한다."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        probe.bind(("0.0.0.0", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
 class GuiLogHandler(logging.Handler):
     def __init__(self, callback: Any) -> None:
         super().__init__()
@@ -137,9 +154,16 @@ class ServerThread(QThread):
                 self.failed.emit("서버가 시작되기 전에 종료되었습니다. 포트 사용 여부를 확인하세요.")
             else:
                 self.finished_cleanly.emit()
+        except SystemExit as error:
+            if not self.stop_requested:
+                if error.code == 3:
+                    self.failed.emit(f"포트 {self.port}이 이미 사용 중입니다. 실행 중인 서버를 확인하세요.")
+                else:
+                    self.failed.emit(f"서버 프로세스가 종료되었습니다. 오류 코드: {error.code}")
         except BaseException as error:
             if not self.stop_requested:
-                self.failed.emit(str(error))
+                message = str(error).strip() or type(error).__name__
+                self.failed.emit(message)
         finally:
             for logger in loggers:
                 logger.removeHandler(handler)
@@ -266,7 +290,7 @@ class MainWindow(QMainWindow):
         self.certificate_detail.setWordWrap(True)
         self.certificate_detail.setObjectName("mutedText")
         certificate_actions = QHBoxLayout()
-        self.setup_certificate_button = QPushButton("인증서 설정")
+        self.setup_certificate_button = QPushButton("HTTPS 설정 안내")
         self.setup_certificate_button.clicked.connect(self._setup_certificate)
         self.open_certificate_button = QPushButton("인증서 폴더")
         self.open_certificate_button.clicked.connect(self._open_certificate_folder)
@@ -437,6 +461,9 @@ class MainWindow(QMainWindow):
         if not self._refresh_certificate_state():
             QMessageBox.warning(self, "HTTPS 설정 필요", self.certificate_detail.text())
             return
+        if not is_port_available(self.port):
+            self._server_failed(f"포트 {self.port}이 이미 사용 중입니다. 기존 Smart Titration을 열거나 해당 프로그램을 종료하세요.")
+            return
         self.server_status.setText("HTTPS 시작 중")
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -491,6 +518,19 @@ class MainWindow(QMainWindow):
 
     def _setup_certificate(self) -> None:
         if self.certificate_process and self.certificate_process.state() != QProcess.ProcessState.NotRunning:
+            return
+        confirmation = QMessageBox.question(
+            self,
+            "로컬 HTTPS 인증서 설정",
+            "Smart Titration은 첫 실행에서 인증서를 자동으로 설치하지 않습니다.\n\n"
+            "설정을 시작하면 이 PC에 실험실 전용 로컬 인증기관을 만들고, 모바일 카메라가 "
+            "HTTPS로 연결할 수 있는 인증서를 생성합니다. 인터넷 공개 인증서가 아니므로 iPhone과 "
+            "Android에도 공개 인증서 파일을 직접 설치해야 합니다.\n\n"
+            "완전 로컬 방식에서 브라우저 카메라를 사용하려면 이 신뢰 설정이 필요합니다. 지금 진행할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
             return
         script = resource_path("setup-ios-https.ps1")
         if not script.is_file():
@@ -579,9 +619,34 @@ def main() -> None:
     application.setApplicationName(APP_NAME)
     application.setWindowIcon(create_app_icon())
     application.setQuitOnLastWindowClosed(False)
+
+    existing_instance = QLocalSocket()
+    existing_instance.connectToServer(INSTANCE_SERVER_NAME)
+    if existing_instance.waitForConnected(500):
+        existing_instance.write(b"show")
+        existing_instance.waitForBytesWritten(500)
+        return
+
+    QLocalServer.removeServer(INSTANCE_SERVER_NAME)
+    instance_server = QLocalServer(application)
+    if not instance_server.listen(INSTANCE_SERVER_NAME):
+        QMessageBox.critical(None, APP_NAME, "프로그램의 단일 실행 채널을 만들 수 없습니다.")
+        return
+
     window = MainWindow()
+
+    def show_existing_window() -> None:
+        while instance_server.hasPendingConnections():
+            connection = instance_server.nextPendingConnection()
+            connection.readAll()
+            connection.disconnectFromServer()
+        window._show_window()
+
+    instance_server.newConnection.connect(show_existing_window)
     window.show()
-    sys.exit(application.exec())
+    exit_code = application.exec()
+    instance_server.close()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
