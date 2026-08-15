@@ -579,12 +579,75 @@ label {
   grid-template-columns: minmax(0, 2fr) minmax(260px, 0.55fr);
 }
 
+.experiment-toolbar {
+  display: flex;
+  max-width: 1480px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 auto;
+  padding: 14px clamp(16px, 3vw, 32px);
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.94);
+  gap: 16px;
+}
+
+.experiment-current {
+  display: grid;
+  min-width: 220px;
+  gap: 2px;
+}
+
+.experiment-current > span:first-child {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.experiment-current strong {
+  overflow-wrap: anywhere;
+  font-size: 1.02rem;
+}
+
+.collection-status {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.collection-status.recording {
+  color: var(--danger);
+}
+
+.collection-status.recording::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  content: "";
+}
+
+.experiment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.experiment-actions button {
+  min-height: 36px;
+  padding: 7px 10px;
+  font-size: 0.78rem;
+}
+
 .plot-stack {
   display: grid;
   gap: 16px;
 }
 
 .plot-panel {
+  position: relative;
   min-height: 340px;
   border-top: 3px solid var(--ink);
   background: var(--surface);
@@ -620,6 +683,15 @@ label {
 }
 
 @media (max-width: 860px) {
+  .experiment-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .experiment-actions {
+    justify-content: flex-start;
+  }
+
   .camera-layout,
   .dashboard-grid {
     grid-template-columns: 1fr;
@@ -718,6 +790,15 @@ label {
   overflow-wrap: anywhere;
 }
 
+.delta-formula {
+  display: block;
+  margin-top: 8px;
+  color: #e9ded2;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
 .color-endpoint {
   border-top: 6px solid #9b5c36;
 }
@@ -741,6 +822,70 @@ label {
   background: #fde9e6;
   font-size: 0.8rem;
   line-height: 1.55;
+}
+
+.experiment-list-section {
+  padding: 14px;
+  border-top: 3px solid var(--ink);
+  background: var(--surface);
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.section-heading-row h2 {
+  margin: 0;
+}
+
+.icon-command {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 6px;
+}
+
+.experiment-list {
+  display: grid;
+  max-height: 270px;
+  overflow-y: auto;
+  gap: 5px;
+}
+
+.experiment-list > p {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.experiment-list-item {
+  display: grid;
+  min-height: auto;
+  justify-content: stretch;
+  padding: 9px 10px;
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--surface);
+  text-align: left;
+  gap: 3px;
+}
+
+.experiment-list-item strong {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.experiment-list-item span {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.experiment-list-item.active {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+  background: #eaf5f2;
 }
 
 .configured-regions {
@@ -777,4 +922,19 @@ label {
 .dialog-choice-grid button {
   justify-content: flex-start;
   margin: 0;
+}
+
+.plot-download {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 6px;
+}
+
+.plot-download svg {
+  width: 17px;
+  height: 17px;
 }

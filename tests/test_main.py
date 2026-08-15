@@ -141,6 +141,13 @@ def test_health_and_static_pages() -> None:
         assert "온도 최고점 부피" in dashboard_page
         assert "지시약 색 종말점" in dashboard_page
         assert "온도-시간" not in dashboard_page
+        assert "d²pH/dV²" in dashboard_page
+        assert "Δ색 = √" in dashboard_page
+        assert "새 실험" in dashboard_page
+        assert "데이터 입력 시작" in dashboard_page
+        assert "CSV" in dashboard_page
+        assert "XLSX" in dashboard_page
+        assert "그래프 PNG 저장" in dashboard_page
 
 
 def test_measurement_websocket_tracks_connected_camera() -> None:

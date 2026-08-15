@@ -21,22 +21,47 @@
       <span id="networkStatus" class="status">서버 연결 중</span>
     </header>
 
+    <section class="experiment-toolbar">
+      <div class="experiment-current">
+        <span>현재 실험</span>
+        <strong id="currentExperimentTitle">선택된 실험 없음</strong>
+        <span id="collectionStatus" class="collection-status">입력 중지</span>
+      </div>
+      <div class="experiment-actions">
+        <button id="newExperiment" type="button"><i data-lucide="plus"></i><span>새 실험</span></button>
+        <button id="startCollection" type="button" disabled><i data-lucide="play"></i><span>데이터 입력 시작</span></button>
+        <button id="stopCollection" class="secondary" type="button" disabled><i data-lucide="square"></i><span>입력 중지</span></button>
+        <button id="exportCsv" class="secondary" type="button" disabled><i data-lucide="file-down"></i><span>CSV</span></button>
+        <button id="exportXlsx" class="secondary" type="button" disabled><i data-lucide="sheet"></i><span>XLSX</span></button>
+        <button id="savePlots" class="secondary" type="button" disabled><i data-lucide="images"></i><span>그래프 PNG 저장</span></button>
+      </div>
+    </section>
+
     <main class="workspace dashboard-grid">
       <div class="plot-stack">
         <section class="plot-panel" aria-labelledby="curveTitle">
           <h2 id="curveTitle" class="hidden">pH 대 부피</h2>
+          <button class="plot-download" data-plot="ph" type="button" title="pH-부피 PNG 저장"><i data-lucide="download"></i></button>
           <div id="phPlot" class="plot"></div>
         </section>
         <section class="plot-panel" aria-labelledby="derivativeTitle">
           <h2 id="derivativeTitle" class="hidden">1차 미분 대 부피</h2>
+          <button class="plot-download" data-plot="first" type="button" title="dpH/dV PNG 저장"><i data-lucide="download"></i></button>
           <div id="derivativePlot" class="plot"></div>
+        </section>
+        <section class="plot-panel" aria-labelledby="secondDerivativeTitle">
+          <h2 id="secondDerivativeTitle" class="hidden">2차 미분 대 부피</h2>
+          <button class="plot-download" data-plot="second" type="button" title="d²pH/dV² PNG 저장"><i data-lucide="download"></i></button>
+          <div id="secondDerivativePlot" class="plot"></div>
         </section>
         <section class="plot-panel" aria-labelledby="temperatureTitle">
           <h2 id="temperatureTitle" class="hidden">온도 대 부피</h2>
+          <button class="plot-download" data-plot="temperature" type="button" title="온도-부피 PNG 저장"><i data-lucide="download"></i></button>
           <div id="temperaturePlot" class="plot"></div>
         </section>
         <section class="plot-panel" aria-labelledby="colorTitle">
           <h2 id="colorTitle" class="hidden">Δ색 대 부피</h2>
+          <button class="plot-download" data-plot="color" type="button" title="Δ색-부피 PNG 저장"><i data-lucide="download"></i></button>
           <div id="colorPlot" class="plot"></div>
         </section>
       </div>
@@ -48,6 +73,7 @@
           </section>
           <section class="endpoint-summary color-endpoint">
             <span>지시약 색 종말점</span><strong id="colorEndpointVolume">--.--</strong><span id="colorEndpointDelta">Δ색 --.-</span>
+            <small class="delta-formula">Δ색 = √[(L*−L₀*)² + (a*−a₀*)² + (b*−b₀*)²]</small>
           </section>
           <section class="endpoint-summary temperature-peak">
             <span>온도 최고점 부피</span><strong id="temperaturePeakVolume">--.--</strong><span id="temperaturePeak">--.- °C</span>
@@ -60,6 +86,13 @@
         </section>
 
         <div id="sensorWarnings" class="sensor-warnings hidden"></div>
+
+        <section class="experiment-list-section">
+          <div class="section-heading-row">
+            <h2>실험 목록</h2><button id="refreshExperiments" class="icon-command" type="button" title="목록 새로고침"><i data-lucide="refresh-cw"></i></button>
+          </div>
+          <div id="experimentList" class="experiment-list"><p>저장된 실험이 없습니다.</p></div>
+        </section>
 
         <div class="metric-row">
           <div class="metric"><span>부피 레코드</span><strong id="volumeCount">0</strong></div>
@@ -94,6 +127,17 @@
         </section>
       </aside>
     </main>
+
+    <dialog id="newExperimentDialog" class="guided-dialog">
+      <form id="newExperimentForm" method="dialog">
+        <p class="step-label">새 실험</p>
+        <h2>실험 제목을 입력하세요</h2>
+        <p>이 제목으로 원본 데이터, CSV, XLSX와 그래프 PNG 파일을 구분합니다.</p>
+        <label>실험 제목<input id="experimentTitleInput" type="text" maxlength="100" autocomplete="off" required /></label>
+        <button type="submit">실험 만들기</button>
+        <button id="cancelNewExperiment" class="secondary" type="button">취소</button>
+      </form>
+    </dialog>
 
     <script type="module" src="/static/dashboard.js"></script>
   </body>

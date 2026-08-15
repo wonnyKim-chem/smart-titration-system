@@ -1,5 +1,6 @@
 const phPlot = document.querySelector("#phPlot");
 const derivativePlot = document.querySelector("#derivativePlot");
+const secondDerivativePlot = document.querySelector("#secondDerivativePlot");
 const temperaturePlot = document.querySelector("#temperaturePlot");
 const colorPlot = document.querySelector("#colorPlot");
 const networkStatus = document.querySelector("#networkStatus");
@@ -17,6 +18,23 @@ const temperatureCount = document.querySelector("#temperatureCount");
 const colorCount = document.querySelector("#colorCount");
 const matchedCount = document.querySelector("#matchedCount");
 const updatedAt = document.querySelector("#updatedAt");
+const currentExperimentTitle = document.querySelector("#currentExperimentTitle");
+const collectionStatus = document.querySelector("#collectionStatus");
+const newExperimentButton = document.querySelector("#newExperiment");
+const startCollectionButton = document.querySelector("#startCollection");
+const stopCollectionButton = document.querySelector("#stopCollection");
+const exportCsvButton = document.querySelector("#exportCsv");
+const exportXlsxButton = document.querySelector("#exportXlsx");
+const savePlotsButton = document.querySelector("#savePlots");
+const refreshExperimentsButton = document.querySelector("#refreshExperiments");
+const experimentList = document.querySelector("#experimentList");
+const newExperimentDialog = document.querySelector("#newExperimentDialog");
+const newExperimentForm = document.querySelector("#newExperimentForm");
+const experimentTitleInput = document.querySelector("#experimentTitleInput");
+const cancelNewExperimentButton = document.querySelector("#cancelNewExperiment");
+
+let currentExperiment = null;
+let experiments = [];
 
 const plotConfiguration = {
   responsive: true,
@@ -35,16 +53,29 @@ function baseLayout(title, yAxisTitle) {
       title: "부피 (mL)",
       gridcolor: "#e8ebe7",
       zerolinecolor: "#cbd1cd",
+      rangemode: "tozero",
+      autorange: true,
+      automargin: true,
     },
     yaxis: {
       title: yAxisTitle,
       gridcolor: "#e8ebe7",
       zerolinecolor: "#cbd1cd",
+      autorange: true,
+      automargin: true,
     },
     legend: { orientation: "h", x: 0, y: 1.12 },
     hovermode: "x unified",
-    transition: { duration: 180, easing: "cubic-in-out" },
   };
+}
+
+function applyVolumeRange(layout, ...volumeAxes) {
+  const values = volumeAxes.flat().filter((value) => Number.isFinite(Number(value))).map(Number);
+  const maximum = Math.max(0, ...values);
+  layout.xaxis.range = [0, maximum > 0 ? maximum * 1.04 : 1];
+  layout.xaxis.autorange = false;
+  layout.yaxis.autorange = true;
+  return layout;
 }
 
 function equivalenceShape(volume) {
@@ -67,6 +98,7 @@ function renderAnalysis(message) {
   const rawPh = message.ph ?? [];
   const smoothedPh = message.smoothedPh?.length ? message.smoothedPh : rawPh;
   const firstDerivative = message.firstDerivative ?? [];
+  const secondDerivative = message.secondDerivative ?? [];
   const equivalentVolume = message.equivalenceVolume;
   const equivalentIndex = equivalentVolume === null ? -1 : volume.indexOf(equivalentVolume);
 
@@ -96,11 +128,11 @@ function renderAnalysis(message) {
     });
   }
 
-  const phLayout = baseLayout("pH / Volume", "pH");
+  const phLayout = applyVolumeRange(baseLayout("pH / Volume", "pH"), volume);
   phLayout.shapes = equivalenceShape(equivalentVolume);
   Plotly.react(phPlot, phTraces, phLayout, plotConfiguration);
 
-  const derivativeLayout = baseLayout("First derivative", "dpH/dV");
+  const derivativeLayout = applyVolumeRange(baseLayout("First derivative", "dpH/dV"), volume);
   derivativeLayout.shapes = equivalenceShape(equivalentVolume);
   Plotly.react(
     derivativePlot,
@@ -119,9 +151,33 @@ function renderAnalysis(message) {
     plotConfiguration,
   );
 
+  const secondDerivativeLayout = applyVolumeRange(
+    baseLayout("Second derivative", "d²pH/dV²"),
+    volume,
+  );
+  secondDerivativeLayout.shapes = equivalenceShape(equivalentVolume);
+  Plotly.react(
+    secondDerivativePlot,
+    [
+      {
+        x: secondDerivative.length ? volume : [],
+        y: secondDerivative,
+        name: "d²pH/dV²",
+        mode: "lines",
+        line: { color: "#316a9e", width: 2.5 },
+        zeroLine: true,
+      },
+    ],
+    secondDerivativeLayout,
+    plotConfiguration,
+  );
+
   const temperatureVolume = message.temperatureVolume ?? [];
   const temperature = message.temperature ?? [];
-  const temperatureLayout = baseLayout("온도 / 부피", "온도 (°C)");
+  const temperatureLayout = applyVolumeRange(
+    baseLayout("온도 / 부피", "온도 (°C)"),
+    temperatureVolume,
+  );
   temperatureLayout.shapes = equivalenceShape(message.temperaturePeakVolume);
   Plotly.react(
     temperaturePlot,
@@ -148,7 +204,7 @@ function renderAnalysis(message) {
 
   const colorVolume = message.colorVolume ?? [];
   const deltaColor = message.deltaColor ?? [];
-  const colorLayout = baseLayout("Δ색 / 부피", "Δ색");
+  const colorLayout = applyVolumeRange(baseLayout("Δ색 / 부피", "Δ색"), colorVolume);
   colorLayout.shapes = equivalenceShape(message.colorEndpointVolume);
   Plotly.react(
     colorPlot,
@@ -189,13 +245,184 @@ function renderAnalysis(message) {
   const warnings = message.sensorWarnings ?? [];
   sensorWarnings.classList.toggle("hidden", warnings.length === 0);
   sensorWarnings.textContent = warnings.join(" ");
+  updateCurrentExperiment(message.experiment);
 }
 
 function renderEmptyPlots() {
-  Plotly.newPlot(phPlot, [], baseLayout("pH / Volume", "pH"), plotConfiguration);
-  Plotly.newPlot(derivativePlot, [], baseLayout("First derivative", "dpH/dV"), plotConfiguration);
-  Plotly.newPlot(temperaturePlot, [], baseLayout("온도 / 부피", "온도 (°C)"), plotConfiguration);
-  Plotly.newPlot(colorPlot, [], baseLayout("Δ색 / 부피", "Δ색"), plotConfiguration);
+  Plotly.newPlot(phPlot, [], applyVolumeRange(baseLayout("pH / Volume", "pH"), []), plotConfiguration);
+  Plotly.newPlot(derivativePlot, [], applyVolumeRange(baseLayout("First derivative", "dpH/dV"), []), plotConfiguration);
+  Plotly.newPlot(secondDerivativePlot, [], applyVolumeRange(baseLayout("Second derivative", "d²pH/dV²"), []), plotConfiguration);
+  Plotly.newPlot(temperaturePlot, [], applyVolumeRange(baseLayout("온도 / 부피", "온도 (°C)"), []), plotConfiguration);
+  Plotly.newPlot(colorPlot, [], applyVolumeRange(baseLayout("Δ색 / 부피", "Δ색"), []), plotConfiguration);
+}
+
+function updateCurrentExperiment(experiment) {
+  currentExperiment = experiment;
+  const exists = Boolean(experiment?.id);
+  const recording = experiment?.status === "recording";
+  currentExperimentTitle.textContent = exists ? experiment.title : "선택된 실험 없음";
+  collectionStatus.textContent = recording ? "데이터 입력 중" : "입력 중지";
+  collectionStatus.classList.toggle("recording", recording);
+  startCollectionButton.disabled = !exists || recording;
+  stopCollectionButton.disabled = !exists || !recording;
+  exportCsvButton.disabled = !exists;
+  exportXlsxButton.disabled = !exists;
+  savePlotsButton.disabled = !exists;
+  renderExperimentList();
+}
+
+function renderExperimentList() {
+  experimentList.replaceChildren();
+  if (!experiments.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "저장된 실험이 없습니다.";
+    experimentList.append(empty);
+    return;
+  }
+  for (const experiment of experiments) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "experiment-list-item";
+    button.classList.toggle("active", experiment.id === currentExperiment?.id);
+    const title = document.createElement("strong");
+    title.textContent = experiment.title;
+    const detail = document.createElement("span");
+    const date = new Date(experiment.createdAt).toLocaleString("ko-KR", { hour12: false });
+    detail.textContent = `${date} · ${experiment.recordCount}개 · ${experiment.status === "recording" ? "입력 중" : "중지"}`;
+    button.append(title, detail);
+    button.addEventListener("click", () => selectExperiment(experiment.id));
+    experimentList.append(button);
+  }
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { "content-type": "application/json", ...(options.headers ?? {}) },
+  });
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    body = {};
+  }
+  return { response, body };
+}
+
+async function loadExperiments(autoSelect = true) {
+  const response = await fetch("/api/experiments");
+  const body = await response.json();
+  experiments = body.experiments ?? [];
+  renderExperimentList();
+  if (autoSelect && !currentExperiment && experiments.length) {
+    await selectExperiment(body.activeId ?? experiments[0].id, false);
+  } else if (!experiments.length && !currentExperiment && !newExperimentDialog.open) {
+    newExperimentDialog.showModal();
+    requestAnimationFrame(() => experimentTitleInput.focus());
+  }
+}
+
+async function createExperiment(title) {
+  let stopCurrent = false;
+  if (currentExperiment?.status === "recording") {
+    stopCurrent = confirm("현재 실험의 데이터 입력을 중지하고 새 실험을 만들까요?");
+    if (!stopCurrent) return;
+  }
+  const { response, body } = await requestJson("/api/experiments", {
+    method: "POST",
+    body: JSON.stringify({ title, stopCurrent }),
+  });
+  if (!response.ok) {
+    alert(body.message ?? "실험을 만들지 못했습니다.");
+    return;
+  }
+  updateCurrentExperiment(body.experiment);
+  await loadExperiments(false);
+}
+
+async function selectExperiment(experimentId, askBeforeStopping = true) {
+  if (experimentId === currentExperiment?.id) return;
+  let stopCurrent = false;
+  if (currentExperiment?.status === "recording") {
+    if (!askBeforeStopping) return;
+    stopCurrent = confirm("현재 실험의 데이터 입력을 중지하고 선택한 실험으로 이동할까요?");
+    if (!stopCurrent) return;
+  }
+  const { response, body } = await requestJson(`/api/experiments/${experimentId}/select`, {
+    method: "POST",
+    body: JSON.stringify({ stopCurrent }),
+  });
+  if (!response.ok) {
+    alert(body.message ?? "실험을 선택하지 못했습니다.");
+    return;
+  }
+  updateCurrentExperiment(body.experiment);
+  await loadExperiments(false);
+}
+
+async function setCollectionState(recording) {
+  if (!currentExperiment) return;
+  const action = recording ? "start" : "stop";
+  const { response, body } = await requestJson(
+    `/api/experiments/${currentExperiment.id}/${action}`,
+    { method: "POST", body: "{}" },
+  );
+  if (!response.ok) {
+    alert(body.message ?? "입력 상태를 변경하지 못했습니다.");
+    return;
+  }
+  updateCurrentExperiment(body.experiment);
+  await loadExperiments(false);
+}
+
+function downloadExperimentFile(extension) {
+  if (!currentExperiment) return;
+  location.href = `/api/experiments/${currentExperiment.id}/export.${extension}`;
+}
+
+function safeDownloadName(value) {
+  return value.replace(/[\\/:*?"<>|]/g, "-").trim() || "실험";
+}
+
+async function saveAllPlots() {
+  if (!currentExperiment) return;
+  const title = safeDownloadName(currentExperiment.title);
+  const plots = [
+    [phPlot, "pH-부피"],
+    [derivativePlot, "dpH-dV"],
+    [secondDerivativePlot, "d2pH-dV2"],
+    [temperaturePlot, "온도-부피"],
+    [colorPlot, "델타색-부피"],
+  ];
+  for (const [plot, name] of plots) {
+    await Plotly.downloadImage(plot, {
+      format: "png",
+      filename: `${title}-${name}`,
+      width: 1400,
+      height: 800,
+      scale: 1,
+    });
+  }
+}
+
+const plotDownloads = {
+  ph: [phPlot, "pH-부피"],
+  first: [derivativePlot, "dpH-dV"],
+  second: [secondDerivativePlot, "d2pH-dV2"],
+  temperature: [temperaturePlot, "온도-부피"],
+  color: [colorPlot, "델타색-부피"],
+};
+
+async function saveSinglePlot(plotKey) {
+  if (!currentExperiment || !plotDownloads[plotKey]) return;
+  const [plot, name] = plotDownloads[plotKey];
+  await Plotly.downloadImage(plot, {
+    format: "png",
+    filename: `${safeDownloadName(currentExperiment.title)}-${name}`,
+    width: 1400,
+    height: 800,
+    scale: 1,
+  });
 }
 
 function connectDashboard() {
@@ -221,4 +448,28 @@ window.addEventListener("load", () => {
   globalThis.lucide?.createIcons();
   renderEmptyPlots();
   connectDashboard();
+  loadExperiments();
+});
+
+newExperimentButton.addEventListener("click", () => {
+  experimentTitleInput.value = "";
+  newExperimentDialog.showModal();
+  requestAnimationFrame(() => experimentTitleInput.focus());
+});
+newExperimentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const title = experimentTitleInput.value.trim();
+  if (!title) return;
+  newExperimentDialog.close();
+  await createExperiment(title);
+});
+cancelNewExperimentButton.addEventListener("click", () => newExperimentDialog.close());
+startCollectionButton.addEventListener("click", () => setCollectionState(true));
+stopCollectionButton.addEventListener("click", () => setCollectionState(false));
+exportCsvButton.addEventListener("click", () => downloadExperimentFile("csv"));
+exportXlsxButton.addEventListener("click", () => downloadExperimentFile("xlsx"));
+savePlotsButton.addEventListener("click", saveAllPlots);
+refreshExperimentsButton.addEventListener("click", () => loadExperiments(false));
+document.querySelectorAll(".plot-download").forEach((button) => {
+  button.addEventListener("click", () => saveSinglePlot(button.dataset.plot));
 });

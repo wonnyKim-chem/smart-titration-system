@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import importlib
+import io
 import os
 import re
 import socket
@@ -10,16 +13,19 @@ import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import numpy as np
 import qrcode
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.signal import find_peaks, savgol_filter
 
 from certificate_manager import ensure_short_lived_server_certificate
+from experiment_store import ExperimentStore, normalise_title
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -43,7 +49,9 @@ AVERAGING_BUCKET_MS = 500
 class MeasurementHub:
     """두 측정 스트림을 수집하고 분석 결과를 배포한다."""
 
-    def __init__(self) -> None:
+    def __init__(self, experiment_store: ExperimentStore) -> None:
+        self.experiment_store = experiment_store
+        self.active_experiment: dict[str, Any] | None = None
         self.streams: dict[Channel, deque[dict[str, Any]]] = {
             channel: deque(maxlen=MAX_STREAM_SIZE) for channel in CHANNEL_FIELDS
         }
@@ -54,6 +62,29 @@ class MeasurementHub:
         self.dashboard_clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
         self.latest_analysis = self._empty_analysis()
+
+    def select_experiment(self, experiment: dict[str, Any]) -> None:
+        """활성 실험의 원본 스트림과 분석 상태를 메모리에 복원한다."""
+        self.active_experiment = experiment
+        self.experiment_store.active_id = str(experiment["id"])
+        for channel in CHANNEL_FIELDS:
+            records = list(experiment.get("streams", {}).get(channel, []))[-MAX_STREAM_SIZE:]
+            self.streams[channel] = deque(records, maxlen=MAX_STREAM_SIZE)
+            self.seen_ids[channel] = {str(record["id"]) for record in records}
+        self.latest_analysis = analyse_streams(
+            list(self.streams["burette"]),
+            list(self.streams["ph"]),
+            list(self.streams["temperature"]),
+            list(self.streams["color"]),
+        )
+
+    def persist_active_experiment(self) -> None:
+        if not self.active_experiment:
+            return
+        self.active_experiment["streams"] = {
+            channel: list(self.streams[channel]) for channel in CHANNEL_FIELDS
+        }
+        self.experiment_store.save(self.active_experiment)
 
     @staticmethod
     def _empty_analysis() -> dict[str, Any]:
@@ -108,6 +139,15 @@ class MeasurementHub:
         accepted_ids: list[str] = []
         rejected: list[dict[str, str]] = []
 
+        if not self.active_experiment or self.active_experiment.get("status") != "recording":
+            return [], [
+                {
+                    "id": str(record.get("id", "")),
+                    "reason": "대시보드에서 실험 데이터 입력을 시작하세요.",
+                }
+                for record in records
+            ]
+
         async with self.lock:
             for raw_record in records:
                 try:
@@ -133,15 +173,31 @@ class MeasurementHub:
                 list(self.streams["temperature"]),
                 list(self.streams["color"]),
             )
+            self.persist_active_experiment()
             snapshot = self.snapshot()
 
         await self.broadcast(snapshot)
         return accepted_ids, rejected
 
     def snapshot(self) -> dict[str, Any]:
+        experiment = None
+        if self.active_experiment:
+            experiment = {
+                key: self.active_experiment.get(key)
+                for key in (
+                    "id",
+                    "title",
+                    "status",
+                    "createdAt",
+                    "updatedAt",
+                    "startedAt",
+                    "stoppedAt",
+                )
+            }
         return {
             "type": "analysis",
             "serverTimestamp": int(time.time() * 1000),
+            "experiment": experiment,
             "streamCounts": {
                 channel: len(self.streams[channel]) for channel in CHANNEL_FIELDS
             },
@@ -373,6 +429,129 @@ def analyse_streams(
     return result
 
 
+EXPORT_COLUMNS = (
+    ("volume_mL", "부피 (mL)"),
+    ("ph", "pH"),
+    ("smoothedPh", "평활 pH"),
+    ("firstDerivative", "dpH/dV"),
+    ("secondDerivative", "d²pH/dV²"),
+    ("temperature", "온도 (°C)"),
+    ("deltaColor", "Δ색"),
+)
+
+
+def analyse_experiment(experiment: dict[str, Any]) -> dict[str, Any]:
+    streams = experiment.get("streams", {})
+    return analyse_streams(
+        list(streams.get("burette", [])),
+        list(streams.get("ph", [])),
+        list(streams.get("temperature", [])),
+        list(streams.get("color", [])),
+    )
+
+
+def _interpolate_at(target: float, x_values: list[float], y_values: list[float]) -> float | None:
+    if not x_values or not y_values or len(x_values) != len(y_values):
+        return None
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    unique_y = np.zeros_like(unique_x)
+    counts = np.zeros_like(unique_x)
+    np.add.at(unique_y, inverse, y)
+    np.add.at(counts, inverse, 1)
+    unique_y /= counts
+    if target < unique_x[0] or target > unique_x[-1]:
+        return None
+    if unique_x.size == 1:
+        return float(unique_y[0]) if np.isclose(target, unique_x[0]) else None
+    return float(np.interp(target, unique_x, unique_y))
+
+
+def build_export_rows(analysis: dict[str, Any]) -> list[dict[str, float | None]]:
+    """모든 부피 기반 분석값을 하나의 부피 축에 보간해 표로 만든다."""
+    volume_axis = sorted(
+        {
+            float(value)
+            for key in ("volume", "temperatureVolume", "colorVolume")
+            for value in analysis.get(key, [])
+        }
+    )
+    rows: list[dict[str, float | None]] = []
+    for volume in volume_axis:
+        rows.append(
+            {
+                "volume_mL": volume,
+                "ph": _interpolate_at(volume, analysis.get("volume", []), analysis.get("ph", [])),
+                "smoothedPh": _interpolate_at(
+                    volume, analysis.get("volume", []), analysis.get("smoothedPh", [])
+                ),
+                "firstDerivative": _interpolate_at(
+                    volume, analysis.get("volume", []), analysis.get("firstDerivative", [])
+                ),
+                "secondDerivative": _interpolate_at(
+                    volume, analysis.get("volume", []), analysis.get("secondDerivative", [])
+                ),
+                "temperature": _interpolate_at(
+                    volume,
+                    analysis.get("temperatureVolume", []),
+                    analysis.get("temperature", []),
+                ),
+                "deltaColor": _interpolate_at(
+                    volume, analysis.get("colorVolume", []), analysis.get("deltaColor", [])
+                ),
+            }
+        )
+    return rows
+
+
+def build_csv_bytes(analysis: dict[str, Any]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=[key for key, _ in EXPORT_COLUMNS])
+    writer.writerow({key: label for key, label in EXPORT_COLUMNS})
+    for row in build_export_rows(analysis):
+        writer.writerow({key: "" if row[key] is None else row[key] for key, _ in EXPORT_COLUMNS})
+    return output.getvalue().encode("utf-8-sig")
+
+
+def build_xlsx_bytes(experiment: dict[str, Any], analysis: dict[str, Any]) -> bytes:
+    openpyxl = importlib.import_module("openpyxl")
+    styles = importlib.import_module("openpyxl.styles")
+    workbook = openpyxl.Workbook()
+    data_sheet = workbook.active
+    data_sheet.title = "분석 데이터"
+    data_sheet.append([label for _, label in EXPORT_COLUMNS])
+    for cell in data_sheet[1]:
+        cell.font = styles.Font(bold=True)
+    for row in build_export_rows(analysis):
+        data_sheet.append([row[key] for key, _ in EXPORT_COLUMNS])
+    data_sheet.freeze_panes = "A2"
+    for column in data_sheet.columns:
+        data_sheet.column_dimensions[column[0].column_letter].width = 16
+
+    summary = workbook.create_sheet("실험 요약")
+    summary.append(["항목", "값"])
+    summary.append(["실험 제목", experiment.get("title")])
+    summary.append(["생성 시각 (Unix ms)", experiment.get("createdAt")])
+    summary.append(["pH 당량점 부피 (mL)", analysis.get("equivalenceVolume")])
+    summary.append(["당량점 pH", analysis.get("equivalencePh")])
+    summary.append(["온도 최고점 부피 (mL)", analysis.get("temperaturePeakVolume")])
+    summary.append(["최고 온도 (°C)", analysis.get("temperaturePeak")])
+    summary.append(["지시약 색 종말점 부피 (mL)", analysis.get("colorEndpointVolume")])
+    summary.append(["종말점 Δ색", analysis.get("colorEndpointDelta")])
+    for cell in summary[1]:
+        cell.font = styles.Font(bold=True)
+    summary.column_dimensions["A"].width = 28
+    summary.column_dimensions["B"].width = 32
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def get_recordings_directory() -> Path:
     """사용자별 녹화 파일 저장 폴더를 반환한다."""
     local_app_data = Path(os.getenv("LOCALAPPDATA", BASE_DIR))
@@ -392,7 +571,9 @@ def safe_recording_name(name: str, channel: str, content_type: str) -> str:
     return f"{safe_channel}-{timestamp}-{safe_stem}-{unique_suffix}{extension}"
 
 
-hub = MeasurementHub()
+experiment_store = ExperimentStore(CHANNEL_FIELDS)
+experiment_store.recover_interrupted_experiments()
+hub = MeasurementHub(experiment_store)
 app = FastAPI(title="Smart Titration Curve Analysis System", version="1.0.0")
 
 if STATIC_DIR.exists():
@@ -409,6 +590,125 @@ async def add_browser_security_headers(request: Request, call_next: Any) -> Any:
 @app.get("/api/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "timestamp": int(time.time() * 1000)})
+
+
+@app.get("/api/experiments")
+async def list_experiments() -> JSONResponse:
+    return JSONResponse(
+        {
+            "activeId": experiment_store.active_id,
+            "experiments": experiment_store.list(),
+        }
+    )
+
+
+@app.post("/api/experiments")
+async def create_experiment(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except (ValueError, TypeError):
+        return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
+    if hub.active_experiment and hub.active_experiment.get("status") == "recording":
+        if not bool(payload.get("stopCurrent", False)):
+            return JSONResponse(
+                {"message": "현재 실험의 데이터 입력을 중지한 뒤 새 실험을 만들어야 합니다."},
+                status_code=409,
+            )
+        experiment_store.set_status(hub.active_experiment, "stopped")
+    try:
+        experiment = experiment_store.create(str(payload.get("title", "")))
+    except (ValueError, TypeError):
+        return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
+    hub.select_experiment(experiment)
+    await hub.broadcast(hub.snapshot())
+    return JSONResponse({"experiment": hub.snapshot()["experiment"]}, status_code=201)
+
+
+@app.post("/api/experiments/{experiment_id}/select")
+async def select_experiment(experiment_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    stop_current = bool(payload.get("stopCurrent", False))
+    if (
+        hub.active_experiment
+        and hub.active_experiment.get("id") != experiment_id
+        and hub.active_experiment.get("status") == "recording"
+    ):
+        if not stop_current:
+            return JSONResponse(
+                {"message": "현재 실험의 데이터 입력을 중지한 뒤 이동해야 합니다."},
+                status_code=409,
+            )
+        experiment_store.set_status(hub.active_experiment, "stopped")
+    try:
+        experiment = experiment_store.load(experiment_id)
+    except (FileNotFoundError, ValueError):
+        return JSONResponse({"message": "실험을 찾을 수 없습니다."}, status_code=404)
+    if experiment.get("status") == "recording":
+        experiment_store.set_status(experiment, "stopped")
+    hub.select_experiment(experiment)
+    await hub.broadcast(hub.snapshot())
+    return JSONResponse({"experiment": hub.snapshot()["experiment"]})
+
+
+@app.post("/api/experiments/{experiment_id}/start")
+async def start_experiment(experiment_id: str) -> JSONResponse:
+    if not hub.active_experiment or hub.active_experiment.get("id") != experiment_id:
+        return JSONResponse({"message": "먼저 실험을 선택하세요."}, status_code=409)
+    experiment_store.set_status(hub.active_experiment, "recording")
+    await hub.broadcast(hub.snapshot())
+    return JSONResponse({"experiment": hub.snapshot()["experiment"]})
+
+
+@app.post("/api/experiments/{experiment_id}/stop")
+async def stop_experiment(experiment_id: str) -> JSONResponse:
+    if not hub.active_experiment or hub.active_experiment.get("id") != experiment_id:
+        return JSONResponse({"message": "현재 선택된 실험이 아닙니다."}, status_code=409)
+    experiment_store.set_status(hub.active_experiment, "stopped")
+    hub.persist_active_experiment()
+    await hub.broadcast(hub.snapshot())
+    return JSONResponse({"experiment": hub.snapshot()["experiment"]})
+
+
+def _load_experiment_for_export(experiment_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if hub.active_experiment and hub.active_experiment.get("id") == experiment_id:
+        hub.persist_active_experiment()
+        experiment = hub.active_experiment
+        analysis = hub.latest_analysis
+    else:
+        experiment = experiment_store.load(experiment_id)
+        analysis = analyse_experiment(experiment)
+    return experiment, analysis
+
+
+@app.get("/api/experiments/{experiment_id}/export.csv")
+async def export_experiment_csv(experiment_id: str) -> Any:
+    try:
+        experiment, analysis = _load_experiment_for_export(experiment_id)
+    except (FileNotFoundError, ValueError):
+        return JSONResponse({"message": "실험을 찾을 수 없습니다."}, status_code=404)
+    filename = f"{normalise_title(str(experiment['title']))}.csv"
+    return StreamingResponse(
+        io.BytesIO(build_csv_bytes(analysis)),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@app.get("/api/experiments/{experiment_id}/export.xlsx")
+async def export_experiment_xlsx(experiment_id: str) -> Any:
+    try:
+        experiment, analysis = _load_experiment_for_export(experiment_id)
+    except (FileNotFoundError, ValueError):
+        return JSONResponse({"message": "실험을 찾을 수 없습니다."}, status_code=404)
+    filename = f"{normalise_title(str(experiment['title']))}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(build_xlsx_bytes(experiment, analysis)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @app.post("/api/recordings")
