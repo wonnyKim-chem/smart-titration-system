@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import ssl
 import time
 from collections import deque
 from pathlib import Path
@@ -315,13 +316,66 @@ def print_access_qr(url: str) -> None:
     qr.print_ascii(invert=True)
 
 
+def get_default_certificate_paths() -> tuple[Path, Path]:
+    """Windows 사용자 데이터 폴더의 기본 인증서 경로를 반환한다."""
+    local_app_data = Path(os.getenv("LOCALAPPDATA", BASE_DIR))
+    certificate_directory = local_app_data / "SmartTitration" / "certs"
+    return (
+        certificate_directory / "titration.pem",
+        certificate_directory / "titration-key.pem",
+    )
+
+
+def resolve_tls_configuration() -> tuple[str, str]:
+    """인증서 파일과 개인키를 확인하고 실제 TLS 로딩까지 검증한다."""
+    configured_certificate = os.getenv("TITRATION_SSL_CERT")
+    configured_private_key = os.getenv("TITRATION_SSL_KEY")
+    default_certificate, default_private_key = get_default_certificate_paths()
+
+    if configured_certificate or configured_private_key:
+        if not configured_certificate or not configured_private_key:
+            raise RuntimeError(
+                "TITRATION_SSL_CERT와 TITRATION_SSL_KEY를 모두 설정해야 합니다."
+            )
+        certificate = Path(configured_certificate).expanduser()
+        private_key = Path(configured_private_key).expanduser()
+    else:
+        certificate = default_certificate
+        private_key = default_private_key
+
+    missing_files = [
+        str(path) for path in (certificate, private_key) if not path.is_file()
+    ]
+    if missing_files:
+        missing_text = "\n  - ".join(missing_files)
+        raise RuntimeError(
+            "HTTPS 인증서가 없습니다. setup-ios-https.ps1을 먼저 실행하세요."
+            f"\n  - {missing_text}"
+        )
+
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(certificate), str(private_key))
+    except (OSError, ssl.SSLError) as error:
+        raise RuntimeError(
+            "HTTPS 인증서 또는 개인키를 읽을 수 없습니다. 인증서를 다시 생성하세요."
+        ) from error
+
+    return str(certificate), str(private_key)
+
+
 def run() -> None:
     host = os.getenv("TITRATION_HOST", "0.0.0.0")
     port = int(os.getenv("TITRATION_PORT", "8000"))
-    certificate = os.getenv("TITRATION_SSL_CERT")
-    private_key = os.getenv("TITRATION_SSL_KEY")
-    scheme = "https" if certificate and private_key else "http"
-    print_access_qr(f"{scheme}://{get_local_ip()}:{port}")
+    try:
+        certificate, private_key = resolve_tls_configuration()
+    except RuntimeError as error:
+        print(f"\n서버를 시작할 수 없습니다.\n{error}")
+        raise SystemExit(2) from error
+
+    access_url = f"https://{get_local_ip()}:{port}"
+    print_access_qr(access_url)
+    print(f"서버 PC에서도 실시간 데이터는 {access_url} 에서 확인하세요.\n")
     uvicorn.run(
         app,
         host=host,

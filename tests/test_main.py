@@ -1,9 +1,17 @@
 import math
+from pathlib import Path
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
-from main import SYNC_TOLERANCE_MS, analyse_streams, app, match_by_timestamp
+from main import (
+    SYNC_TOLERANCE_MS,
+    analyse_streams,
+    app,
+    match_by_timestamp,
+    resolve_tls_configuration,
+)
 
 
 def test_timestamp_matching_respects_tolerance() -> None:
@@ -50,3 +58,31 @@ def test_health_and_static_pages() -> None:
         assert client.get("/").status_code == 200
         assert client.get("/burette").status_code == 200
         assert client.get("/ph-meter").status_code == 200
+
+
+def test_tls_configuration_rejects_missing_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TITRATION_SSL_CERT", str(tmp_path / "missing.pem"))
+    monkeypatch.setenv("TITRATION_SSL_KEY", str(tmp_path / "missing-key.pem"))
+
+    with pytest.raises(RuntimeError, match="HTTPS 인증서가 없습니다"):
+        resolve_tls_configuration()
+
+
+def test_tls_configuration_rejects_invalid_certificate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    certificate = tmp_path / "invalid-test.pem"
+    private_key = tmp_path / "invalid-test-key.pem"
+    certificate.write_text("invalid certificate", encoding="ascii")
+    private_key.write_text("invalid key", encoding="ascii")
+    monkeypatch.setenv("TITRATION_SSL_CERT", str(certificate))
+    monkeypatch.setenv("TITRATION_SSL_KEY", str(private_key))
+
+    try:
+        with pytest.raises(RuntimeError, match="읽을 수 없습니다"):
+            resolve_tls_configuration()
+    finally:
+        certificate.unlink(missing_ok=True)
+        private_key.unlink(missing_ok=True)

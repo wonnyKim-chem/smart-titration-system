@@ -4,8 +4,37 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Get-Command mkcert -ErrorAction SilentlyContinue)) {
-    throw "mkcert가 필요합니다. 먼저 'winget install FiloSottile.mkcert'를 실행하세요."
+function Find-Mkcert {
+    $command = Get-Command mkcert -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $packageRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+    if (Test-Path $packageRoot) {
+        return Get-ChildItem $packageRoot -Filter "mkcert.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName -First 1
+    }
+
+    return $null
+}
+
+$mkcert = Find-Mkcert
+if (-not $mkcert) {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "mkcert is missing and winget is unavailable. Install mkcert, then run this script again."
+    }
+
+    Write-Host "Installing mkcert with winget..."
+    winget install --id FiloSottile.mkcert --exact --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "winget failed to install mkcert."
+    }
+
+    $mkcert = Find-Mkcert
+    if (-not $mkcert) {
+        throw "mkcert was installed but its executable could not be found. Open a new PowerShell window and retry."
+    }
 }
 
 if (-not $IpAddress) {
@@ -18,21 +47,32 @@ if (-not $IpAddress) {
 }
 
 if (-not $IpAddress) {
-    throw "로컬 IPv4 주소를 찾지 못했습니다. -IpAddress 매개변수로 직접 지정하세요."
+    throw "Local IPv4 address was not found. Specify it with -IpAddress."
 }
 
-$certificateDirectory = Join-Path $PSScriptRoot "certs"
+$certificateDirectory = Join-Path $env:LOCALAPPDATA "SmartTitration\certs"
 New-Item -ItemType Directory -Path $certificateDirectory -Force | Out-Null
 
-mkcert -install
-mkcert `
+& $mkcert -install
+if ($LASTEXITCODE -ne 0) {
+    throw "mkcert failed to install its local certificate authority."
+}
+
+& $mkcert `
     -cert-file (Join-Path $certificateDirectory "titration.pem") `
     -key-file (Join-Path $certificateDirectory "titration-key.pem") `
     $IpAddress localhost 127.0.0.1 ::1
+if ($LASTEXITCODE -ne 0) {
+    throw "mkcert failed to create the HTTPS certificate."
+}
 
-$certificateAuthorityDirectory = mkcert -CAROOT
+$certificateAuthorityDirectory = & $mkcert -CAROOT
+$mobileCertificate = Join-Path $certificateDirectory "SmartTitration-RootCA.crt"
+Copy-Item (Join-Path $certificateAuthorityDirectory "rootCA.pem") $mobileCertificate -Force
+$env:TITRATION_SSL_CERT = Join-Path $certificateDirectory "titration.pem"
+$env:TITRATION_SSL_KEY = Join-Path $certificateDirectory "titration-key.pem"
 Write-Host ""
-Write-Host "인증서 생성 완료"
-Write-Host "iPhone으로 전송할 파일: $certificateAuthorityDirectory\rootCA.pem"
-Write-Host "서버 접속 주소: https://${IpAddress}:8000"
-Write-Host "README의 iPhone 인증서 신뢰 설정을 완료한 뒤 HTTPS로 서버를 실행하세요."
+Write-Host "HTTPS certificate setup completed."
+Write-Host "Transfer this file to the mobile device: $mobileCertificate"
+Write-Host "Server URL: https://${IpAddress}:8000"
+Write-Host "The EXE will discover the certificate automatically."
