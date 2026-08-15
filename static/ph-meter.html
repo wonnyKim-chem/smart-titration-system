@@ -38,21 +38,19 @@
         <section class="control-section workflow-section">
           <p class="step-label">간편 설정</p>
           <h2>계측기 숫자를 비춰주세요</h2>
-          <p class="section-copy">측정할 항목을 고르고 각 LCD 숫자 부분을 한 번씩 터치하세요. 한 화면에 pH 미터와 온도계가 함께 있어도 각각 추적합니다.</p>
-          <div class="measurement-toggles">
-            <label><input id="enablePh" type="checkbox" checked disabled /> pH 측정</label>
-            <label><input id="enableTemperature" type="checkbox" /> 온도도 측정</label>
-          </div>
+          <p class="section-copy">카메라에서 측정할 숫자 화면이나 온도계를 터치한 뒤, 무엇을 측정할지 선택하세요. 여러 영역을 차례로 추가할 수 있습니다.</p>
           <div class="control-grid">
             <button id="startCamera" class="wide" type="button">
               <i data-lucide="scan-line"></i><span>카메라 시작</span>
             </button>
-            <button id="selectPhRegion" class="secondary" type="button" disabled>
-              <i data-lucide="focus"></i><span>pH 화면 선택</span>
+            <button id="addMeasurementRegion" class="secondary wide" type="button" disabled>
+              <i data-lucide="scan-search"></i><span>측정 영역 추가</span>
             </button>
-            <button id="selectTemperatureRegion" class="secondary" type="button" disabled>
-              <i data-lucide="thermometer"></i><span>온도 화면 선택</span>
-            </button>
+          </div>
+          <div id="configuredRegions" class="configured-regions">
+            <span id="emptyRegions">아직 설정한 측정 영역이 없습니다.</span>
+            <button id="removePhRegion" class="region-chip hidden" type="button">pH 영역 <i data-lucide="x"></i></button>
+            <button id="removeTemperatureRegion" class="region-chip hidden" type="button">온도 영역 <i data-lucide="x"></i></button>
           </div>
           <div id="selectionStatus" class="friendly-status">카메라 연결 전</div>
         </section>
@@ -105,6 +103,37 @@
         </a>
       </aside>
     </main>
+
+    <dialog id="measurementTypeDialog" class="guided-dialog">
+      <p class="step-label">측정 종류 선택</p>
+      <h2>선택한 영역은 무엇인가요?</h2>
+      <p>같은 카메라 화면에서 pH와 온도를 각각 한 번씩 추가할 수 있습니다.</p>
+      <div class="dialog-choice-grid">
+        <button id="choosePh" type="button"><i data-lucide="flask-conical"></i><span>pH 값</span></button>
+        <button id="chooseDigitalTemperature" type="button"><i data-lucide="monitor-dot"></i><span>디지털 온도</span></button>
+        <button id="chooseAnalogTemperature" type="button"><i data-lucide="thermometer"></i><span>아날로그 온도계</span></button>
+      </div>
+      <button id="cancelMeasurementType" class="secondary" type="button">취소</button>
+    </dialog>
+
+    <dialog id="analogCalibrationDialog" class="guided-dialog">
+      <form id="analogCalibrationForm" method="dialog">
+        <p id="analogCalibrationStep" class="step-label">아날로그 온도계 보정 1/2</p>
+        <h2 id="analogCalibrationTitle">첫 번째 눈금을 지정하세요</h2>
+        <p id="analogCalibrationPrompt">온도계에서 실제 값을 아는 낮은 눈금 위치를 카메라 화면에서 터치한 뒤 온도를 입력하세요.</p>
+        <label>실제 온도 (°C)<input id="analogCalibrationValue" type="number" step="0.1" inputmode="decimal" required /></label>
+        <button id="saveAnalogCalibration" type="submit" disabled>이 눈금 저장</button>
+        <button id="cancelAnalogCalibration" class="secondary" type="button">취소</button>
+      </form>
+    </dialog>
+
+    <dialog id="analogSuggestionDialog" class="guided-dialog">
+      <p class="step-label">디지털 숫자를 읽지 못했습니다</p>
+      <h2>아날로그 온도계인가요?</h2>
+      <p>액주와 눈금이 보이는 온도계라면 두 눈금의 위치와 실제 온도를 입력해 보정할 수 있습니다.</p>
+      <button id="switchToAnalog" type="button">아날로그 보정 시작</button>
+      <button id="keepDigitalTemperature" class="secondary" type="button">디지털 인식 계속</button>
+    </dialog>
 
     <script type="module" src="/static/ph-meter.js"></script>
   </body>

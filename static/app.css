@@ -742,3 +742,39 @@ label {
   font-size: 0.8rem;
   line-height: 1.55;
 }
+
+.configured-regions {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 11px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  gap: 7px;
+}
+
+.region-chip {
+  min-height: 32px;
+  padding: 5px 8px 5px 10px;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: #e5f3ef;
+  font-size: 0.76rem;
+}
+
+.region-chip svg {
+  width: 15px;
+  height: 15px;
+}
+
+.dialog-choice-grid {
+  display: grid;
+  margin: 15px 0 8px;
+  gap: 8px;
+}
+
+.dialog-choice-grid button {
+  justify-content: flex-start;
+  margin: 0;
+}

@@ -27,9 +27,10 @@ const canvas = document.querySelector("#processedFrame");
 const cameraStage = document.querySelector("#cameraStage");
 const cameraMessage = document.querySelector("#cameraMessage");
 const startButton = document.querySelector("#startCamera");
-const selectPhRegionButton = document.querySelector("#selectPhRegion");
-const selectTemperatureRegionButton = document.querySelector("#selectTemperatureRegion");
-const enableTemperatureInput = document.querySelector("#enableTemperature");
+const addMeasurementRegionButton = document.querySelector("#addMeasurementRegion");
+const emptyRegions = document.querySelector("#emptyRegions");
+const removePhRegionButton = document.querySelector("#removePhRegion");
+const removeTemperatureRegionButton = document.querySelector("#removeTemperatureRegion");
 const selectionStatus = document.querySelector("#selectionStatus");
 const digitCountInput = document.querySelector("#digitCount");
 const temperatureDigitCountInput = document.querySelector("#temperatureDigitCount");
@@ -38,6 +39,22 @@ const livePh = document.querySelector("#livePh");
 const liveTemperature = document.querySelector("#liveTemperature");
 const visionStatus = document.querySelector("#visionStatus");
 const networkStatus = document.querySelector("#networkStatus");
+const measurementTypeDialog = document.querySelector("#measurementTypeDialog");
+const choosePhButton = document.querySelector("#choosePh");
+const chooseDigitalTemperatureButton = document.querySelector("#chooseDigitalTemperature");
+const chooseAnalogTemperatureButton = document.querySelector("#chooseAnalogTemperature");
+const cancelMeasurementTypeButton = document.querySelector("#cancelMeasurementType");
+const analogCalibrationDialog = document.querySelector("#analogCalibrationDialog");
+const analogCalibrationForm = document.querySelector("#analogCalibrationForm");
+const analogCalibrationStep = document.querySelector("#analogCalibrationStep");
+const analogCalibrationTitle = document.querySelector("#analogCalibrationTitle");
+const analogCalibrationPrompt = document.querySelector("#analogCalibrationPrompt");
+const analogCalibrationValue = document.querySelector("#analogCalibrationValue");
+const saveAnalogCalibrationButton = document.querySelector("#saveAnalogCalibration");
+const cancelAnalogCalibrationButton = document.querySelector("#cancelAnalogCalibration");
+const analogSuggestionDialog = document.querySelector("#analogSuggestionDialog");
+const switchToAnalogButton = document.querySelector("#switchToAnalog");
+const keepDigitalTemperatureButton = document.querySelector("#keepDigitalTemperature");
 
 let cameraCapture = null;
 let sourceFrame = null;
@@ -47,7 +64,13 @@ let lastTemperatureMeasurementAt = 0;
 let lastProcessedAt = 0;
 let displayRegion = JSON.parse(localStorage.getItem("titration-ph-display-region") ?? "null");
 let temperatureRegion = JSON.parse(localStorage.getItem("titration-temperature-display-region") ?? "null");
-let selectionTarget = "ph";
+let temperatureMode = localStorage.getItem("titration-temperature-mode") ?? "digital";
+let analogCalibration = JSON.parse(localStorage.getItem("titration-analog-temperature-calibration") ?? "null");
+let pendingRegion = null;
+let regionSelectionArmed = false;
+let analogCalibrationStage = 0;
+let pendingAnalogPointY = null;
+let analogSuggestionShown = false;
 let trackingFrameCount = 0;
 let failedReadingFrames = 0;
 let failedTemperatureFrames = 0;
@@ -62,6 +85,17 @@ const socket = new ReliableMeasurementSocket("ph", (connected) => {
 socket.connect();
 const temperatureSocket = new ReliableMeasurementSocket("temperature");
 temperatureSocket.connect();
+
+function updateConfiguredRegions() {
+  removePhRegionButton.classList.toggle("hidden", !displayRegion);
+  removeTemperatureRegionButton.classList.toggle("hidden", !temperatureRegion);
+  emptyRegions.classList.toggle("hidden", Boolean(displayRegion || temperatureRegion));
+  livePh.classList.toggle("hidden", !displayRegion);
+  liveTemperature.classList.toggle("hidden", !temperatureRegion);
+  removeTemperatureRegionButton.firstChild.textContent = temperatureMode === "analog"
+    ? "아날로그 온도 영역 "
+    : "디지털 온도 영역 ";
+}
 
 function getRoi(frame, region = displayRegion) {
   if (!region) return null;
@@ -89,7 +123,7 @@ function setDisplayRegion(rectangle, frame, resetReadings = true) {
       };
   localStorage.setItem("titration-ph-display-region", JSON.stringify(displayRegion));
   if (resetReadings) recentReadings.length = 0;
-  selectPhRegionButton.disabled = false;
+  updateConfiguredRegions();
   if (resetReadings) selectionStatus.textContent = "LCD 영역을 찾았습니다. 숫자를 읽는 중입니다.";
 }
 
@@ -114,6 +148,7 @@ function setTemperatureRegion(rectangle, frame, resetReadings = true) {
     failedTemperatureFrames = 0;
     selectionStatus.textContent = "온도계 영역을 찾았습니다. pH와 온도를 함께 읽는 중입니다.";
   }
+  updateConfiguredRegions();
 }
 
 function findDisplayAroundPoint(frame, pointX, pointY, allowFallback = true) {
@@ -203,7 +238,7 @@ function trackDisplayRegion(frame, force = false) {
 }
 
 function trackTemperatureRegion(frame) {
-  if (!temperatureRegion || trackingFrameCount % 15 !== 0) return;
+  if (!temperatureRegion || temperatureMode === "analog" || trackingFrameCount % 15 !== 0) return;
   const current = getRoi(frame, temperatureRegion);
   if (!current) return;
   const centerX = current.x + current.width / 2;
@@ -348,6 +383,75 @@ function stabiliseTemperature(value) {
   return median;
 }
 
+function detectAnalogColumn(frame, rectangle) {
+  const xStart = Math.round(rectangle.x + rectangle.width * 0.28);
+  const xEnd = Math.round(rectangle.x + rectangle.width * 0.72);
+  const rowScores = [];
+  for (let y = rectangle.y; y < rectangle.y + rectangle.height; y += 1) {
+    let coloredPixels = 0;
+    for (let x = xStart; x < xEnd; x += 2) {
+      const offset = (y * frame.cols + x) * 4;
+      const red = frame.data[offset];
+      const green = frame.data[offset + 1];
+      const blue = frame.data[offset + 2];
+      const maximum = Math.max(red, green, blue);
+      const minimum = Math.min(red, green, blue);
+      const saturation = maximum === 0 ? 0 : (maximum - minimum) / maximum;
+      const brightness = (red + green + blue) / 3;
+      if ((saturation > 0.28 && brightness < 235) || brightness < 75) coloredPixels += 1;
+    }
+    rowScores.push(coloredPixels);
+  }
+  const minimumScore = Math.max(2, Math.round((xEnd - xStart) * 0.025));
+  for (let index = 0; index < rowScores.length - 8; index += 1) {
+    const supportingRows = rowScores.slice(index, index + 9).filter((score) => score >= minimumScore).length;
+    if (supportingRows >= 6) {
+      return {
+        normalisedY: index / Math.max(1, rectangle.height - 1),
+        confidence: Math.min(1, rowScores[index] / Math.max(minimumScore * 4, 1)),
+      };
+    }
+  }
+  return null;
+}
+
+function analogTemperatureFromPosition(normalisedY) {
+  if (!analogCalibration?.point1 || !analogCalibration?.point2) return null;
+  const deltaY = analogCalibration.point2.y - analogCalibration.point1.y;
+  if (Math.abs(deltaY) < 0.02) return null;
+  const scale = (analogCalibration.point2.temperature - analogCalibration.point1.temperature) / deltaY;
+  return analogCalibration.point1.temperature + (normalisedY - analogCalibration.point1.y) * scale;
+}
+
+function beginAnalogCalibration() {
+  if (!temperatureRegion) return;
+  temperatureMode = "analog";
+  localStorage.setItem("titration-temperature-mode", temperatureMode);
+  analogCalibration = null;
+  localStorage.removeItem("titration-analog-temperature-calibration");
+  analogCalibrationStage = 1;
+  pendingAnalogPointY = null;
+  selectionStatus.textContent = "아날로그 보정 1/2 · 실제 값을 아는 첫 번째 눈금 위치를 화면에서 터치하세요.";
+  setCameraMessage(cameraMessage, "첫 번째 기준 눈금 위치를 터치하세요.");
+  updateConfiguredRegions();
+}
+
+function captureAnalogCalibrationPoint(pointY, rectangle) {
+  if (!analogCalibrationStage || !rectangle) return false;
+  if (pointY < rectangle.y || pointY > rectangle.y + rectangle.height) return false;
+  pendingAnalogPointY = (pointY - rectangle.y) / rectangle.height;
+  analogCalibrationStep.textContent = `아날로그 온도계 보정 ${analogCalibrationStage}/2`;
+  analogCalibrationTitle.textContent = analogCalibrationStage === 1
+    ? "첫 번째 눈금의 온도를 입력하세요"
+    : "두 번째 눈금의 온도를 입력하세요";
+  analogCalibrationPrompt.textContent = "방금 터치한 눈금이 나타내는 실제 온도를 입력해주세요.";
+  analogCalibrationValue.value = analogCalibrationStage === 1 ? "0.0" : "50.0";
+  saveAnalogCalibrationButton.disabled = false;
+  analogCalibrationDialog.showModal();
+  requestAnimationFrame(() => analogCalibrationValue.select());
+  return true;
+}
+
 async function recordPh(value, timestamp) {
   await socket.storeAndSend({
     id: createMeasurementId("ph"),
@@ -400,7 +504,7 @@ function processFrame(timestamp) {
     return;
   }
   trackDisplayRegion(sourceFrame, failedReadingFrames >= 10);
-  if (enableTemperatureInput.checked) trackTemperatureRegion(sourceFrame);
+  if (temperatureRegion) trackTemperatureRegion(sourceFrame);
   const displayFrame = sourceFrame.clone();
   const roiRectangle = getRoi(sourceFrame);
   if (roiRectangle) {
@@ -435,20 +539,20 @@ function processFrame(timestamp) {
     );
     if (stableValue !== null) {
       livePh.textContent = `pH ${stableValue.toFixed(2)}`;
-      selectionStatus.textContent = `pH ${stableValue.toFixed(2)} 인식 중`;
+      if (!analogCalibrationStage) selectionStatus.textContent = `pH ${stableValue.toFixed(2)} 인식 중`;
       if (timestamp - lastMeasurementAt >= Number(sampleInterval.value)) {
         lastMeasurementAt = timestamp;
         recordPh(stableValue, Date.now());
       }
-    } else if (!imageQuality.usable) {
+    } else if (!imageQuality.usable && !analogCalibrationStage) {
       selectionStatus.textContent = imageQuality.brightness < 22
         ? "화면이 너무 어둡습니다. LCD에 빛이 닿도록 조정해주세요."
         : imageQuality.brightness > 238
           ? "화면이 너무 밝습니다. 반사광을 피해 각도를 조정해주세요."
           : "화면이 흔들리거나 흐립니다. 잠시 고정하면 자동으로 다시 측정합니다.";
-    } else if (failedReadingFrames >= 10) {
+    } else if (failedReadingFrames >= 10 && !analogCalibrationStage) {
       selectionStatus.textContent = "LCD 위치를 다시 찾는 중입니다. 숫자 화면을 카메라 안에 유지해주세요.";
-    } else {
+    } else if (!analogCalibrationStage) {
       selectionStatus.textContent = "숫자를 확인하는 중입니다. 잠시 고정해주세요.";
     }
 
@@ -460,30 +564,49 @@ function processFrame(timestamp) {
     kernel.delete();
   }
 
-  const temperatureRectangle = enableTemperatureInput.checked
-    ? getRoi(sourceFrame, temperatureRegion)
-    : null;
+  const temperatureRectangle = getRoi(sourceFrame, temperatureRegion);
   if (temperatureRectangle) {
-    const roi = sourceFrame.roi(temperatureRectangle);
-    const gray = new cv.Mat();
-    const blurred = new cv.Mat();
-    const darkBinary = new cv.Mat();
-    const lightBinary = new cv.Mat();
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
-    const quality = inspectImageQuality(gray);
-    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
-    cv.threshold(blurred, darkBinary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
-    cv.threshold(blurred, lightBinary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
-    cv.morphologyEx(darkBinary, darkBinary, cv.MORPH_CLOSE, kernel);
-    cv.morphologyEx(lightBinary, lightBinary, cv.MORPH_CLOSE, kernel);
-    const count = Number(temperatureDigitCountInput.value);
-    const darkReading = readDisplay(darkBinary, count, 1);
-    const lightReading = readDisplay(lightBinary, count, 1);
-    const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
-    const temperature = stabiliseTemperature(
-      quality.usable && reading.confidence >= 0.68 ? reading.value : null,
-    );
+    let temperature = null;
+    let analogDetection = null;
+    if (temperatureMode === "analog") {
+      analogDetection = detectAnalogColumn(sourceFrame, temperatureRectangle);
+      temperature = stabiliseTemperature(
+        analogDetection?.confidence >= 0.35
+          ? analogTemperatureFromPosition(analogDetection.normalisedY)
+          : null,
+      );
+    } else {
+      const roi = sourceFrame.roi(temperatureRectangle);
+      const gray = new cv.Mat();
+      const blurred = new cv.Mat();
+      const darkBinary = new cv.Mat();
+      const lightBinary = new cv.Mat();
+      const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+      cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+      const quality = inspectImageQuality(gray);
+      cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+      cv.threshold(blurred, darkBinary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+      cv.threshold(blurred, lightBinary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+      cv.morphologyEx(darkBinary, darkBinary, cv.MORPH_CLOSE, kernel);
+      cv.morphologyEx(lightBinary, lightBinary, cv.MORPH_CLOSE, kernel);
+      const count = Number(temperatureDigitCountInput.value);
+      const darkReading = readDisplay(darkBinary, count, 1);
+      const lightReading = readDisplay(lightBinary, count, 1);
+      const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
+      temperature = stabiliseTemperature(
+        quality.usable && reading.confidence >= 0.68 ? reading.value : null,
+      );
+      roi.delete();
+      gray.delete();
+      blurred.delete();
+      darkBinary.delete();
+      lightBinary.delete();
+      kernel.delete();
+      if (failedTemperatureFrames >= 20 && !analogSuggestionShown && !analogSuggestionDialog.open) {
+        analogSuggestionShown = true;
+        analogSuggestionDialog.showModal();
+      }
+    }
 
     cv.rectangle(
       displayFrame,
@@ -501,24 +624,17 @@ function processFrame(timestamp) {
         lastTemperatureMeasurementAt = timestamp;
         recordTemperature(temperature, Date.now());
       }
+    } else if (temperatureMode === "analog" && !analogCalibration) {
+      selectionStatus.textContent = "아날로그 온도계는 두 눈금 위치와 실제 온도로 먼저 보정해야 합니다.";
     }
-
-    roi.delete();
-    gray.delete();
-    blurred.delete();
-    darkBinary.delete();
-    lightBinary.delete();
-    kernel.delete();
   }
 
   cv.imshow(canvas, displayFrame);
   canvas.classList.add("active");
-  if (displayRegion && (!enableTemperatureInput.checked || temperatureRegion)) {
+  if (displayRegion || temperatureRegion) {
     setCameraMessage(cameraMessage, "");
-  } else if (enableTemperatureInput.checked && !temperatureRegion) {
-    setCameraMessage(cameraMessage, "온도계 LCD 중앙을 터치하세요.");
   } else {
-    setCameraMessage(cameraMessage, "pH 미터 LCD 중앙을 터치하세요.");
+    setCameraMessage(cameraMessage, "측정할 계측기 영역을 터치하세요.");
   }
   displayFrame.delete();
   animationFrame = requestAnimationFrame(processFrame);
@@ -535,9 +651,10 @@ async function startCamera() {
     ensureFrameDimensions();
     cameraCapture = new cv.VideoCapture(video);
     startButton.querySelector("span").textContent = "카메라 실행 중";
-    selectionStatus.textContent = displayRegion ? "저장된 LCD 영역을 확인하는 중입니다." : "카메라 화면에서 LCD 숫자를 터치하세요.";
-    selectPhRegionButton.disabled = false;
-    selectTemperatureRegionButton.disabled = !enableTemperatureInput.checked;
+    selectionStatus.textContent = displayRegion || temperatureRegion
+      ? "저장된 측정 영역을 확인하는 중입니다. 다른 계측기도 터치해 추가할 수 있습니다."
+      : "카메라 화면에서 측정할 계측기 영역을 터치하세요.";
+    addMeasurementRegionButton.disabled = false;
     animationFrame = requestAnimationFrame(processFrame);
   } catch (error) {
     startButton.disabled = false;
@@ -553,47 +670,115 @@ cameraStage.addEventListener("pointerup", (event) => {
   const bounds = canvas.getBoundingClientRect();
   const pointX = ((event.clientX - bounds.left) / bounds.width) * sourceFrame.cols;
   const pointY = ((event.clientY - bounds.top) / bounds.height) * sourceFrame.rows;
-  const rectangle = findDisplayAroundPoint(sourceFrame, pointX, pointY);
-  if (selectionTarget === "temperature" && enableTemperatureInput.checked) {
-    setTemperatureRegion(rectangle, sourceFrame);
-    selectionTarget = "ph";
-  } else {
-    setDisplayRegion(rectangle, sourceFrame);
-    if (enableTemperatureInput.checked && !temperatureRegion) {
-      selectionTarget = "temperature";
-      selectionStatus.textContent = "이제 온도계 LCD 중앙을 터치하세요.";
-    }
+  const temperatureRectangle = getRoi(sourceFrame, temperatureRegion);
+  if (analogCalibrationStage && captureAnalogCalibrationPoint(pointY, temperatureRectangle)) {
+    return;
   }
+  pendingRegion = findDisplayAroundPoint(sourceFrame, pointX, pointY);
+  regionSelectionArmed = false;
+  measurementTypeDialog.showModal();
 });
-selectPhRegionButton.addEventListener("click", () => {
+addMeasurementRegionButton.addEventListener("click", () => {
+  regionSelectionArmed = true;
+  selectionStatus.textContent = "추가할 계측기 화면을 카메라에서 터치하세요.";
+  setCameraMessage(cameraMessage, "측정할 숫자 화면이나 온도계를 터치하세요.");
+});
+choosePhButton.addEventListener("click", () => {
+  if (pendingRegion) setDisplayRegion(pendingRegion, sourceFrame);
+  pendingRegion = null;
+  measurementTypeDialog.close();
+  selectionStatus.textContent = "pH 영역을 설정했습니다. 다른 계측기도 터치해 추가할 수 있습니다.";
+});
+chooseDigitalTemperatureButton.addEventListener("click", () => {
+  if (pendingRegion) setTemperatureRegion(pendingRegion, sourceFrame);
+  temperatureMode = "digital";
+  analogCalibration = null;
+  analogSuggestionShown = false;
+  localStorage.setItem("titration-temperature-mode", temperatureMode);
+  localStorage.removeItem("titration-analog-temperature-calibration");
+  pendingRegion = null;
+  measurementTypeDialog.close();
+  selectionStatus.textContent = "디지털 온도 영역을 설정했습니다. 숫자를 읽는 중입니다.";
+  updateConfiguredRegions();
+});
+chooseAnalogTemperatureButton.addEventListener("click", () => {
+  if (pendingRegion) setTemperatureRegion(pendingRegion, sourceFrame);
+  pendingRegion = null;
+  measurementTypeDialog.close();
+  beginAnalogCalibration();
+});
+cancelMeasurementTypeButton.addEventListener("click", () => {
+  pendingRegion = null;
+  measurementTypeDialog.close();
+});
+removePhRegionButton.addEventListener("click", () => {
   displayRegion = null;
   localStorage.removeItem("titration-ph-display-region");
   recentReadings.length = 0;
   failedReadingFrames = 0;
   livePh.textContent = "pH --.--";
-  selectionTarget = "ph";
-  selectionStatus.textContent = "카메라 화면에서 pH 미터 LCD를 터치하세요.";
-  setCameraMessage(cameraMessage, "pH 미터 LCD 중앙을 터치하세요.");
+  selectionStatus.textContent = temperatureRegion ? "온도만 측정 중입니다." : "측정할 계측기 영역을 터치하세요.";
+  updateConfiguredRegions();
 });
-selectTemperatureRegionButton.addEventListener("click", () => {
+removeTemperatureRegionButton.addEventListener("click", () => {
   temperatureRegion = null;
   localStorage.removeItem("titration-temperature-display-region");
   recentTemperatureReadings.length = 0;
   failedTemperatureFrames = 0;
   liveTemperature.textContent = "--.- °C";
-  selectionTarget = "temperature";
-  selectionStatus.textContent = "카메라 화면에서 온도계 LCD를 터치하세요.";
-  setCameraMessage(cameraMessage, "온도계 LCD 중앙을 터치하세요.");
+  analogCalibration = null;
+  analogCalibrationStage = 0;
+  localStorage.removeItem("titration-analog-temperature-calibration");
+  selectionStatus.textContent = displayRegion ? "pH만 측정 중입니다." : "측정할 계측기 영역을 터치하세요.";
+  updateConfiguredRegions();
 });
-enableTemperatureInput.addEventListener("change", () => {
-  liveTemperature.classList.toggle("hidden", !enableTemperatureInput.checked);
-  selectTemperatureRegionButton.disabled = !enableTemperatureInput.checked || !cameraCapture;
-  if (enableTemperatureInput.checked && !temperatureRegion) {
-    selectionTarget = "temperature";
-    selectionStatus.textContent = "온도계 LCD 중앙을 터치하면 pH와 함께 측정합니다.";
-  } else if (!enableTemperatureInput.checked) {
-    selectionTarget = "ph";
+analogCalibrationForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const temperature = Number(analogCalibrationValue.value);
+  if (!Number.isFinite(temperature) || pendingAnalogPointY === null) return;
+  if (analogCalibrationStage === 1) {
+    analogCalibration = { point1: { y: pendingAnalogPointY, temperature }, point2: null };
+    analogCalibrationStage = 2;
+    pendingAnalogPointY = null;
+    analogCalibrationDialog.close();
+    selectionStatus.textContent = "아날로그 보정 2/2 · 첫 눈금과 떨어진 두 번째 눈금 위치를 터치하세요.";
+    setCameraMessage(cameraMessage, "두 번째 기준 눈금 위치를 터치하세요.");
+  } else {
+    analogCalibration.point2 = { y: pendingAnalogPointY, temperature };
+    const valid = Math.abs(analogCalibration.point2.y - analogCalibration.point1.y) >= 0.08
+      && Math.abs(analogCalibration.point2.temperature - analogCalibration.point1.temperature) >= 0.5;
+    if (!valid) {
+      analogCalibration.point2 = null;
+      pendingAnalogPointY = null;
+      analogCalibrationDialog.close();
+      selectionStatus.textContent = "두 기준 눈금은 충분히 떨어져 있어야 합니다. 두 번째 눈금을 다시 터치하세요.";
+      return;
+    }
+    localStorage.setItem("titration-analog-temperature-calibration", JSON.stringify(analogCalibration));
+    analogCalibrationStage = 0;
+    pendingAnalogPointY = null;
+    analogCalibrationDialog.close();
+    selectionStatus.textContent = "아날로그 온도계 보정 완료 · 액주 끝을 추적하고 있습니다.";
+    setCameraMessage(cameraMessage, "");
   }
+});
+cancelAnalogCalibrationButton.addEventListener("click", () => {
+  analogCalibrationStage = 0;
+  pendingAnalogPointY = null;
+  analogCalibrationDialog.close();
+  selectionStatus.textContent = "아날로그 보정을 취소했습니다. 온도 영역을 다시 추가할 수 있습니다.";
+});
+switchToAnalogButton.addEventListener("click", () => {
+  analogSuggestionDialog.close();
+  beginAnalogCalibration();
+});
+keepDigitalTemperatureButton.addEventListener("click", () => {
+  analogSuggestionDialog.close();
+  failedTemperatureFrames = 0;
+  selectionStatus.textContent = "디지털 온도 인식을 계속합니다. 숫자가 선명하게 보이도록 조정해주세요.";
+});
+[measurementTypeDialog, analogCalibrationDialog, analogSuggestionDialog].forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => event.preventDefault());
 });
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);
@@ -607,10 +792,7 @@ window.addEventListener("beforeunload", () => {
 waitForOpenCv(visionStatus).catch(() => {
   visionStatus.textContent = "로드 실패";
 });
-if (temperatureRegion) {
-  enableTemperatureInput.checked = true;
-  liveTemperature.classList.remove("hidden");
-}
+updateConfiguredRegions();
 if (!globalThis.isSecureContext) {
   setCameraMessage(cameraMessage, describeCameraError({ name: "InsecureContextError" }), "error");
   startButton.disabled = true;

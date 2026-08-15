@@ -125,8 +125,12 @@ def test_health_and_static_pages() -> None:
         assert indicator_page.status_code == 200
         assert "보정 중입니다" in burette_page.text
         assert "Y 현재" not in burette_page.text
-        assert "각 LCD 숫자 부분을 한 번씩 터치" in ph_meter_page.text
-        assert "온도도 측정" in ph_meter_page.text
+        assert "무엇을 측정할지 선택" in ph_meter_page.text
+        assert "pH 값" in ph_meter_page.text
+        assert "디지털 온도" in ph_meter_page.text
+        assert "아날로그 온도계" in ph_meter_page.text
+        assert "온도도 측정" not in ph_meter_page.text
+        assert 'id="enablePh"' not in ph_meter_page.text
         assert "인식 영역 (%)" not in ph_meter_page.text
         assert "이진화 임계값" not in ph_meter_page.text
         assert "녹화 시작" in burette_page.text
