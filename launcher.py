@@ -36,6 +36,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from certificate_manager import (
+    ensure_short_lived_server_certificate,
+    get_local_ca_paths,
+    read_certificate_expiry,
+)
 from main import (
     app,
     get_default_certificate_paths,
@@ -104,8 +109,10 @@ def inspect_certificate(host: str) -> tuple[bool, str]:
         expires_at = ssl.cert_time_to_seconds(decoded["notAfter"])
         if expires_at <= time.time():
             return False, "HTTPS 인증서가 만료되었습니다. 인증서를 다시 생성하세요."
-        expires_text = time.strftime("%Y-%m-%d", time.localtime(expires_at))
-        return True, f"현재 IP에 유효함 · 만료 {expires_text}"
+        expires_text = time.strftime("%Y-%m-%d %H:%M", time.localtime(expires_at))
+        ca_expiry = read_certificate_expiry(get_local_ca_paths()[0])
+        ca_text = ca_expiry.astimezone().strftime("%Y-%m-%d") if ca_expiry else "확인 불가"
+        return True, f"서버 인증서 만료 {expires_text} · 자동 갱신 · 모바일 신뢰 CA 만료 {ca_text}"
     except (KeyError, OSError, RuntimeError, ssl.SSLError) as error:
         return False, str(error)
 
@@ -217,6 +224,7 @@ class MainWindow(QMainWindow):
         self.server_thread: ServerThread | None = None
         self.certificate_process: QProcess | None = None
         self.was_server_running = False
+        self.restart_after_certificate_renewal = False
         self.quitting = False
         self.setWindowTitle(f"{APP_NAME} Server")
         self.setWindowIcon(create_app_icon())
@@ -230,6 +238,10 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(500)
         self.refresh_timer.timeout.connect(self._refresh_runtime_state)
         self.refresh_timer.start()
+        self.certificate_timer = QTimer(self)
+        self.certificate_timer.setInterval(30 * 60 * 1000)
+        self.certificate_timer.timeout.connect(self._maintain_short_lived_certificate)
+        self.certificate_timer.start()
         self._refresh_certificate_state()
         if auto_start:
             QTimer.singleShot(250, self._auto_start_server)
@@ -301,15 +313,22 @@ class MainWindow(QMainWindow):
         certificate_panel.setObjectName("panel")
         certificate_layout = QVBoxLayout(certificate_panel)
         certificate_layout.setContentsMargins(18, 16, 18, 18)
-        certificate_title = QLabel("HTTPS 인증서")
+        certificate_title = QLabel("HTTPS 필수 보안 설정")
         certificate_title.setObjectName("sectionTitle")
         self.certificate_status = QLabel("확인 중")
         self.certificate_status.setObjectName("certificateStatus")
         self.certificate_detail = QLabel("")
         self.certificate_detail.setWordWrap(True)
         self.certificate_detail.setObjectName("mutedText")
+        certificate_reason = QLabel(
+            "서버 시작과 모바일 브라우저 카메라 사용에는 신뢰된 HTTPS가 필수입니다. "
+            "카메라를 사용할 iPhone·Android에도 로컬 CA 인증서를 설치하고 신뢰해야 합니다."
+        )
+        certificate_reason.setWordWrap(True)
+        certificate_reason.setObjectName("requiredNotice")
         certificate_actions = QHBoxLayout()
-        self.setup_certificate_button = QPushButton("HTTPS 설정 안내")
+        self.setup_certificate_button = QPushButton("HTTPS 필수 설정")
+        self.setup_certificate_button.setObjectName("primaryButton")
         self.setup_certificate_button.clicked.connect(self._setup_certificate)
         self.open_certificate_button = QPushButton("인증서 폴더")
         self.open_certificate_button.clicked.connect(self._open_certificate_folder)
@@ -318,6 +337,7 @@ class MainWindow(QMainWindow):
         certificate_layout.addWidget(certificate_title)
         certificate_layout.addWidget(self.certificate_status)
         certificate_layout.addWidget(self.certificate_detail)
+        certificate_layout.addWidget(certificate_reason)
         certificate_layout.addLayout(certificate_actions)
         operation_column.addWidget(certificate_panel)
 
@@ -423,6 +443,13 @@ class MainWindow(QMainWindow):
             QLabel#sectionTitle { font-size: 15px; font-weight: 700; }
             QLabel#mutedText { color: #66716e; line-height: 1.5; }
             QLabel#certificateStatus { color: #087f6d; font-size: 16px; font-weight: 700; }
+            QLabel#requiredNotice {
+                padding: 9px 10px;
+                border-left: 4px solid #f1c84a;
+                color: #5b574a;
+                background: #fff8dc;
+                font-size: 11px;
+            }
             QLabel#qrLabel { background: #ffffff; border: 1px solid #cbd1cd; }
             QLineEdit#urlInput {
                 min-height: 38px;
@@ -464,8 +491,20 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(message)
 
     def _refresh_certificate_state(self) -> bool:
+        if not self._server_is_running():
+            certificate, private_key = get_default_certificate_paths()
+            try:
+                renewed, expires_at = ensure_short_lived_server_certificate(
+                    self.ip_address, certificate, private_key
+                )
+                if renewed and expires_at:
+                    self._append_log(
+                        f"24시간 HTTPS 서버 인증서를 발급했습니다. 만료: {expires_at.astimezone():%Y-%m-%d %H:%M}"
+                    )
+            except RuntimeError as error:
+                self._append_log(f"HTTPS 인증서 준비 필요: {error}")
         valid, detail = inspect_certificate(self.ip_address)
-        self.certificate_status.setText("사용 가능" if valid else "설정 필요")
+        self.certificate_status.setText("필수 설정 완료" if valid else "필수 설정 미완료")
         self.certificate_status.setStyleSheet("color: #087f6d;" if valid else "color: #c44235;")
         self.certificate_detail.setText(detail)
         self.start_button.setEnabled(valid and not self._server_is_running())
@@ -475,8 +514,8 @@ class MainWindow(QMainWindow):
         if self._refresh_certificate_state():
             self._start_server()
         else:
-            self.server_status.setText("HTTPS 설정 필요")
-            self.qr_label.setText("인증서를 설정하면\nHTTPS QR 코드가 표시됩니다.")
+            self.server_status.setText("HTTPS 필수 설정 미완료")
+            self.qr_label.setText("HTTPS 필수 설정을 완료하면\n서버와 카메라 QR 코드가 활성화됩니다.")
 
     def _server_is_running(self) -> bool:
         return bool(self.server_thread and self.server_thread.is_serving)
@@ -485,7 +524,12 @@ class MainWindow(QMainWindow):
         if self.server_thread and self.server_thread.isRunning():
             return
         if not self._refresh_certificate_state():
-            QMessageBox.warning(self, "HTTPS 설정 필요", self.certificate_detail.text())
+            QMessageBox.warning(
+                self,
+                "HTTPS 필수 설정 미완료",
+                "서버와 모바일 브라우저 카메라를 사용하려면 HTTPS 필수 설정을 먼저 완료하세요.\n\n"
+                + self.certificate_detail.text(),
+            )
             return
         if not is_port_available(self.port):
             self._server_failed(f"포트 {self.port}이 이미 사용 중입니다. 기존 Smart Titration을 열거나 해당 프로그램을 종료하세요.")
@@ -520,6 +564,29 @@ class MainWindow(QMainWindow):
         self.qr_label.clear()
         self.start_button.setEnabled(self._refresh_certificate_state())
         self.stop_button.setEnabled(False)
+        if self.restart_after_certificate_renewal:
+            self.restart_after_certificate_renewal = False
+            QTimer.singleShot(300, self._start_server)
+
+    def _maintain_short_lived_certificate(self) -> None:
+        certificate, private_key = get_default_certificate_paths()
+        try:
+            renewed, expires_at = ensure_short_lived_server_certificate(
+                self.ip_address, certificate, private_key
+            )
+        except RuntimeError as error:
+            self._append_log(f"24시간 인증서 자동 갱신 실패: {error}")
+            return
+        if not renewed:
+            return
+        self._append_log(
+            f"24시간 HTTPS 인증서를 자동 갱신했습니다. 만료: {expires_at.astimezone():%Y-%m-%d %H:%M}"
+        )
+        if self._server_is_running():
+            self.restart_after_certificate_renewal = True
+            self._stop_server()
+        else:
+            self._refresh_certificate_state()
 
     def _refresh_runtime_state(self) -> None:
         running = self._server_is_running()
@@ -549,12 +616,16 @@ class MainWindow(QMainWindow):
             return
         confirmation = QMessageBox.question(
             self,
-            "로컬 HTTPS 인증서 설정",
-            "Smart Titration은 첫 실행에서 인증서를 자동으로 설치하지 않습니다.\n\n"
-            "설정을 시작하면 이 PC에 실험실 전용 로컬 인증기관을 만들고, 모바일 카메라가 "
-            "HTTPS로 연결할 수 있는 인증서를 생성합니다. 인터넷 공개 인증서가 아니므로 iPhone과 "
-            "Android에도 공개 인증서 파일을 직접 설치해야 합니다.\n\n"
-            "완전 로컬 방식에서 브라우저 카메라를 사용하려면 이 신뢰 설정이 필요합니다. 지금 진행할까요?",
+            "HTTPS 필수 설정",
+            "Smart Titration 서버와 모바일 브라우저 카메라는 신뢰된 HTTPS 연결에서만 작동합니다. "
+            "따라서 이 설정은 서버 시작에 필수입니다.\n\n"
+            "설정을 시작하면 이 PC에 Smart Titration 전용 로컬 인증기관을 설치하고, 현재 IP용 "
+            "HTTPS 서버 인증서를 만듭니다. Windows가 인증기관 설치 확인 창을 표시할 수 있습니다.\n\n"
+            "카메라를 사용할 iPhone·Android에도 SmartTitration-RootCA.crt를 한 번 설치하고 신뢰해야 합니다. "
+            "이 인증서는 카메라 접근 권한이나 외부 전송 권한을 주는 것이 아니라, 이 PC와 모바일 사이의 "
+            "로컬 HTTPS 연결을 암호화하고 서버 신원을 확인하는 용도입니다.\n\n"
+            "실제 서버 인증서는 24시간만 유효하고 앱이 만료 전에 자동 갱신합니다. 모바일에 설치하는 "
+            "로컬 CA는 장기 신뢰 인증서이므로 매일 다시 설치할 필요가 없습니다. 지금 필수 설정을 진행할까요?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -594,7 +665,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "HTTPS 설정 완료",
-                "인증서가 준비되었습니다. 모바일 기기에 SmartTitration-RootCA.crt를 설치한 뒤 신뢰하세요.",
+                "HTTPS 필수 설정이 완료되었습니다. 서버 인증서는 24시간마다 자동 갱신됩니다.\n\n"
+                "카메라를 사용할 모바일 기기에 SmartTitration-RootCA.crt를 한 번 설치하고 신뢰하세요.",
             )
             self._start_server()
         else:

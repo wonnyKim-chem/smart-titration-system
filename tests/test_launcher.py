@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
 from launcher import MainWindow, is_port_available
 
@@ -35,7 +35,11 @@ def test_first_run_does_not_install_certificate_automatically(
 
     assert window.certificate_process is None
     assert window.server_thread is None
-    assert window.server_status.text() == "HTTPS 설정 필요"
+    assert window.server_status.text() == "HTTPS 필수 설정 미완료"
+    assert window.setup_certificate_button.text() == "HTTPS 필수 설정"
+    required_notice = window.findChild(QLabel, "requiredNotice")
+    assert required_notice is not None
+    assert "모바일 브라우저 카메라" in required_notice.text()
     window.quitting = True
     window.tray.hide()
     window.close()

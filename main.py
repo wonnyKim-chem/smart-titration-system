@@ -19,6 +19,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from scipy.signal import find_peaks, savgol_filter
 
+from certificate_manager import ensure_short_lived_server_certificate
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -615,13 +617,22 @@ def resolve_tls_configuration() -> tuple[str, str]:
 def run() -> None:
     host = os.getenv("TITRATION_HOST", "0.0.0.0")
     port = int(os.getenv("TITRATION_PORT", "8000"))
+    local_ip = get_local_ip()
+    if not os.getenv("TITRATION_SSL_CERT") and not os.getenv("TITRATION_SSL_KEY"):
+        default_certificate, default_private_key = get_default_certificate_paths()
+        try:
+            ensure_short_lived_server_certificate(
+                local_ip, default_certificate, default_private_key
+            )
+        except RuntimeError as error:
+            print(f"\n24시간 HTTPS 인증서를 준비하지 못했습니다.\n{error}")
     try:
         certificate, private_key = resolve_tls_configuration()
     except RuntimeError as error:
         print(f"\n서버를 시작할 수 없습니다.\n{error}")
         raise SystemExit(2) from error
 
-    access_url = f"https://{get_local_ip()}:{port}"
+    access_url = f"https://{local_ip}:{port}"
     print_access_qr(access_url)
     print(f"서버 PC에서도 실시간 데이터는 {access_url} 에서 확인하세요.\n")
     uvicorn.run(
