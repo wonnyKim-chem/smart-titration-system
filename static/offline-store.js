@@ -81,13 +81,18 @@ export async function markMeasurementsSynced(ids) {
   database.close();
 }
 
-export function createMeasurementId(channel) {
+export function getClientId(channel) {
   const clientKey = `titration-client-${channel}`;
   let clientId = localStorage.getItem(clientKey);
   if (!clientId) {
     clientId = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
     localStorage.setItem(clientKey, clientId);
   }
+  return clientId;
+}
+
+export function createMeasurementId(channel) {
+  const clientId = getClientId(channel);
   const nonce = Math.random().toString(36).slice(2, 9);
   return `${channel}-${clientId}-${Date.now()}-${nonce}`;
 }

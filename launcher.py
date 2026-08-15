@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import ssl
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,9 +17,11 @@ from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QFont,
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -40,6 +43,12 @@ from main import (
     get_recordings_directory,
     hub,
     resolve_tls_configuration,
+)
+from wifi_share import (
+    build_wifi_qr_payload,
+    get_connected_ssid,
+    get_wifi_profiles,
+    read_wifi_profile,
 )
 
 
@@ -272,8 +281,11 @@ class MainWindow(QMainWindow):
         self.open_button = QPushButton("대시보드 열기")
         self.open_button.setObjectName("primaryButton")
         self.open_button.clicked.connect(self._open_dashboard)
+        self.wifi_button = QPushButton("Wi-Fi 초대")
+        self.wifi_button.clicked.connect(self._show_wifi_share)
         action_row.addWidget(self.copy_button)
         action_row.addWidget(self.open_button)
+        action_row.addWidget(self.wifi_button)
         connection_layout.addLayout(action_row)
         self.access_note = QLabel("HTTPS 서버가 시작되면 이 주소에서 실시간 데이터를 확인할 수 있습니다.")
         self.access_note.setWordWrap(True)
@@ -335,12 +347,16 @@ class MainWindow(QMainWindow):
         metrics.setSpacing(8)
         self.volume_metric = MetricWidget("부피 레코드")
         self.ph_metric = MetricWidget("pH 레코드")
+        self.temperature_metric = MetricWidget("온도 레코드")
+        self.color_metric = MetricWidget("색 레코드")
         self.camera_metric = MetricWidget("카메라 연결")
         self.matched_metric = MetricWidget("시간 정합")
         metrics.addWidget(self.volume_metric, 0, 0)
         metrics.addWidget(self.ph_metric, 0, 1)
-        metrics.addWidget(self.camera_metric, 1, 0)
-        metrics.addWidget(self.matched_metric, 1, 1)
+        metrics.addWidget(self.temperature_metric, 1, 0)
+        metrics.addWidget(self.color_metric, 1, 1)
+        metrics.addWidget(self.camera_metric, 2, 0)
+        metrics.addWidget(self.matched_metric, 2, 1)
         operation_column.addLayout(metrics)
         operation_column.addStretch()
         content.addLayout(operation_column, 4)
@@ -522,6 +538,8 @@ class MainWindow(QMainWindow):
 
         self.volume_metric.set_value(str(len(hub.streams["burette"])))
         self.ph_metric.set_value(str(len(hub.streams["ph"])))
+        self.temperature_metric.set_value(str(len(hub.streams["temperature"])))
+        self.color_metric.set_value(str(len(hub.streams["color"])))
         connected_cameras = sum(len(clients) for clients in hub.measurement_clients.values())
         self.camera_metric.set_value(str(connected_cameras))
         self.matched_metric.set_value(str(hub.latest_analysis.get("matchedCount", 0)))
@@ -599,6 +617,66 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "서버 중지됨", "HTTPS 서버를 먼저 시작하세요.")
             return
         QDesktopServices.openUrl(QUrl(self.access_url))
+
+    def _show_wifi_share(self) -> None:
+        warning = QMessageBox.warning(
+            self,
+            "Wi-Fi 암호가 포함된 QR",
+            "이 QR을 스캔한 사람은 선택한 Wi-Fi에 암호 입력 없이 접속할 수 있습니다.\n\n"
+            "암호는 화면 텍스트나 로그에 표시하지 않으며 QR 창을 닫은 뒤 메모리에 보관하지 않습니다. "
+            "신뢰하는 사람에게만 보여주세요. 계속할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if warning != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            profiles = get_wifi_profiles()
+            if not profiles:
+                raise RuntimeError("Windows에 저장된 Wi-Fi 프로필이 없습니다.")
+            connected = get_connected_ssid()
+            default_index = profiles.index(connected) if connected in profiles else 0
+            profile, accepted = QInputDialog.getItem(
+                self,
+                "Wi-Fi 선택",
+                "초대할 Wi-Fi 프로필을 선택하세요.",
+                profiles,
+                default_index,
+                False,
+            )
+            if not accepted:
+                return
+            ssid, security, password, hidden = read_wifi_profile(profile)
+            payload = build_wifi_qr_payload(ssid, security, password, hidden)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            QMessageBox.critical(self, "Wi-Fi QR 생성 실패", str(error))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Wi-Fi 초대")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(360)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 24)
+        title = QLabel("Wi-Fi 연결 QR")
+        title.setObjectName("sectionTitle")
+        subtitle = QLabel(f"SSID: {ssid}\n모바일 카메라로 스캔해 네트워크에 연결하세요.")
+        subtitle.setWordWrap(True)
+        subtitle.setObjectName("mutedText")
+        qr_label = QLabel()
+        qr_label.setPixmap(create_qr_pixmap(payload, 260))
+        qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        close_button = QPushButton("QR 닫기")
+        close_button.setObjectName("primaryButton")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addWidget(qr_label, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(close_button)
+        password = ""
+        payload = ""
+        dialog.exec()
 
     def _toggle_logs(self) -> None:
         visible = not self.log_output.isVisible()

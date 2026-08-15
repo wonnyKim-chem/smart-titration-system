@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f2f1ec" />
+    <title>지시약 색 측정 | Smart Titration</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+    <script src="https://docs.opencv.org/4.x/opencv.js" async></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">RGB</div>
+        <div>
+          <p class="eyebrow">Camera C</p>
+          <h1>지시약 색 변화 측정</h1>
+        </div>
+      </div>
+      <span id="networkStatus" class="status">오프라인 저장</span>
+    </header>
+
+    <main class="workspace camera-layout">
+      <section id="cameraStage" class="camera-stage touch-camera" aria-label="삼각플라스크 카메라 영상">
+        <video id="camera" playsinline muted></video>
+        <canvas id="processedFrame"></canvas>
+        <p id="cameraMessage" class="camera-message">카메라 시작을 눌러 삼각플라스크를 비춰주세요.</p>
+        <div class="camera-overlay">
+          <div class="live-readings">
+            <output id="liveDeltaColor" class="live-value">Δ색 --.-</output>
+            <output id="liveRgb" class="live-value compact">RGB --, --, --</output>
+          </div>
+        </div>
+      </section>
+
+      <aside class="control-panel">
+        <section class="control-section workflow-section">
+          <p class="step-label">색 측정 설정</p>
+          <h2>플라스크 바닥을 선택하세요</h2>
+          <p class="section-copy">무광 흰 종이를 플라스크 아래에 깔고, 용액이 넓게 보이는 플라스크 몸통 중앙을 터치하세요.</p>
+          <div class="control-grid">
+            <button id="startCamera" class="wide" type="button"><i data-lucide="camera"></i><span>카메라 시작</span></button>
+            <button id="selectFlask" class="secondary" type="button" disabled><i data-lucide="focus"></i><span>플라스크 다시 선택</span></button>
+            <button id="setColorBaseline" class="secondary" type="button" disabled><i data-lucide="pipette"></i><span>현재 색을 기준으로</span></button>
+          </div>
+          <div id="colorStatus" class="friendly-status">카메라 연결 전</div>
+        </section>
+
+        <section class="calibration-warning">
+          <h2>전극 없이 색만 측정한다면</h2>
+          <p>실험 시작 용액에서 <strong>현재 색을 기준으로</strong>를 눌러 Δ색 0을 설정하세요. 정확한 종말점 비교를 위해 같은 지시약 농도와 조명에서 pH/ORP 전극 또는 계산된 당량점을 사용한 기준 실험을 한 번 수행해 종말점 색과 부피를 확인해야 합니다.</p>
+          <p>색만으로 절대 pH나 ORP를 구하려면 알려진 pH 또는 전위의 표준용액을 최소 두 개 이상 촬영해 별도 보정 곡선을 만들어야 합니다.</p>
+        </section>
+
+        <section id="recordingPanel" class="recording-panel">
+          <div><h2>실험 영상</h2><p id="recordingStatus">카메라를 연결하면 녹화할 수 있습니다.</p></div>
+          <div class="recording-actions">
+            <button id="startRecording" type="button" disabled><i data-lucide="circle"></i><span>녹화 시작</span></button>
+            <button id="stopRecording" class="secondary" type="button" disabled><i data-lucide="square"></i><span>정지</span></button>
+            <button id="downloadRecording" class="secondary" type="button" disabled><i data-lucide="download"></i><span>기기에 저장</span></button>
+            <button id="uploadRecording" class="secondary" type="button" disabled><i data-lucide="upload"></i><span>서버로 전송</span></button>
+          </div>
+        </section>
+
+        <span id="visionStatus" class="hidden">로딩</span>
+        <a class="button-link secondary" href="/"><i data-lucide="chart-no-axes-combined"></i><span>분석 대시보드</span></a>
+      </aside>
+    </main>
+    <script type="module" src="/static/indicator.js"></script>
+  </body>
+</html>

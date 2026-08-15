@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#f2f1ec" />
-    <title>pH 계측기 OCR | Smart Titration</title>
+    <title>pH · 온도 OCR | Smart Titration</title>
     <link rel="stylesheet" href="/static/app.css" />
     <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <script src="https://docs.opencv.org/4.x/opencv.js" async></script>
@@ -15,7 +15,7 @@
         <div class="brand-mark">pH</div>
         <div>
           <p class="eyebrow">Camera B</p>
-          <h1>pH 계측기 LCD 인식</h1>
+          <h1>pH · 온도 LCD 인식</h1>
         </div>
       </div>
       <span id="networkStatus" class="status">오프라인 저장</span>
@@ -27,7 +27,10 @@
         <canvas id="processedFrame"></canvas>
         <p id="cameraMessage" class="camera-message">카메라 시작을 눌러 영상을 연결하세요.</p>
         <div class="camera-overlay">
-          <output id="livePh" class="live-value">pH --.--</output>
+          <div class="live-readings">
+            <output id="livePh" class="live-value">pH --.--</output>
+            <output id="liveTemperature" class="live-value compact hidden">--.- °C</output>
+          </div>
         </div>
       </section>
 
@@ -35,13 +38,20 @@
         <section class="control-section workflow-section">
           <p class="step-label">간편 설정</p>
           <h2>계측기 숫자를 비춰주세요</h2>
-          <p class="section-copy">카메라를 시작한 뒤 화면에서 LCD 숫자 부분을 한 번 터치하면 인식 영역을 자동으로 찾습니다.</p>
+          <p class="section-copy">측정할 항목을 고르고 각 LCD 숫자 부분을 한 번씩 터치하세요. 한 화면에 pH 미터와 온도계가 함께 있어도 각각 추적합니다.</p>
+          <div class="measurement-toggles">
+            <label><input id="enablePh" type="checkbox" checked disabled /> pH 측정</label>
+            <label><input id="enableTemperature" type="checkbox" /> 온도도 측정</label>
+          </div>
           <div class="control-grid">
             <button id="startCamera" class="wide" type="button">
               <i data-lucide="scan-line"></i><span>카메라 시작</span>
             </button>
-            <button id="resetDisplay" class="secondary wide" type="button" disabled>
-              <i data-lucide="focus"></i><span>LCD 영역 다시 선택</span>
+            <button id="selectPhRegion" class="secondary" type="button" disabled>
+              <i data-lucide="focus"></i><span>pH 화면 선택</span>
+            </button>
+            <button id="selectTemperatureRegion" class="secondary" type="button" disabled>
+              <i data-lucide="thermometer"></i><span>온도 화면 선택</span>
             </button>
           </div>
           <div id="selectionStatus" class="friendly-status">카메라 연결 전</div>
@@ -64,10 +74,17 @@
           <summary>인식이 잘 안 될 때</summary>
           <div class="advanced-body control-grid">
             <label>
-              표시 자릿수
+              pH 표시 자릿수
               <select id="digitCount">
                 <option value="3" selected>3자리 (7.00)</option>
                 <option value="4">4자리 (12.34)</option>
+              </select>
+            </label>
+            <label>
+              온도 표시 형식
+              <select id="temperatureDigitCount">
+                <option value="3" selected>3자리 (25.0)</option>
+                <option value="4">4자리 (100.0)</option>
               </select>
             </label>
             <label>

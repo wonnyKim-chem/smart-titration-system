@@ -9,10 +9,70 @@ from main import (
     SYNC_TOLERANCE_MS,
     analyse_streams,
     app,
+    average_clients_by_time,
     hub,
     match_by_timestamp,
     resolve_tls_configuration,
 )
+
+
+def test_client_averaging_gives_each_device_equal_weight() -> None:
+    records = [
+        {"timestamp": 1_000, "clientId": "fast", "ph": 2.0},
+        {"timestamp": 1_100, "clientId": "fast", "ph": 4.0},
+        {"timestamp": 1_050, "clientId": "slow", "ph": 10.0},
+    ]
+
+    averaged = average_clients_by_time(records, ("ph",))
+
+    assert len(averaged) == 1
+    assert averaged[0]["clientCount"] == 2
+    assert averaged[0]["ph"] == 6.5
+
+
+def test_temperature_peak_and_color_endpoint_without_ph() -> None:
+    volume_axis = np.linspace(0, 10, 41)
+    base_timestamp = 1_700_000_000_000
+    volumes = [
+        {
+            "id": f"v-{index}",
+            "clientId": "volume-a",
+            "timestamp": base_timestamp + index * 500,
+            "volume": float(volume),
+        }
+        for index, volume in enumerate(volume_axis)
+    ]
+    temperatures = [
+        {
+            "id": f"t-{index}",
+            "clientId": "temperature-a",
+            "timestamp": base_timestamp + index * 500 + 40,
+            "temperature": float(30 - (volume - 5) ** 2 * 0.2),
+        }
+        for index, volume in enumerate(volume_axis)
+    ]
+    colors = [
+        {
+            "id": f"c-{index}",
+            "clientId": "color-a",
+            "timestamp": base_timestamp + index * 500 + 60,
+            "red": 120.0,
+            "green": 100.0,
+            "blue": 80.0,
+            "hue": 20.0,
+            "saturation": 0.5,
+            "lightness": 50.0,
+            "deltaColor": float(20 / (1 + np.exp(-3 * (volume - 6)))),
+        }
+        for index, volume in enumerate(volume_axis)
+    ]
+
+    result = analyse_streams(volumes, [], temperatures, colors)
+
+    assert math.isclose(result["temperaturePeakVolume"], 5.0, abs_tol=0.3)
+    assert math.isclose(result["temperaturePeak"], 30.0, abs_tol=0.2)
+    assert math.isclose(result["colorEndpointVolume"], 6.0, abs_tol=0.4)
+    assert result["equivalenceVolume"] is None
 
 
 def test_timestamp_matching_respects_tolerance() -> None:
@@ -59,15 +119,24 @@ def test_health_and_static_pages() -> None:
         assert client.get("/").status_code == 200
         burette_page = client.get("/burette")
         ph_meter_page = client.get("/ph-meter")
+        indicator_page = client.get("/indicator")
         assert burette_page.status_code == 200
         assert ph_meter_page.status_code == 200
+        assert indicator_page.status_code == 200
         assert "보정 중입니다" in burette_page.text
         assert "Y 현재" not in burette_page.text
-        assert "LCD 숫자 부분을 한 번 터치" in ph_meter_page.text
+        assert "각 LCD 숫자 부분을 한 번씩 터치" in ph_meter_page.text
+        assert "온도도 측정" in ph_meter_page.text
         assert "인식 영역 (%)" not in ph_meter_page.text
         assert "이진화 임계값" not in ph_meter_page.text
         assert "녹화 시작" in burette_page.text
         assert "서버로 전송" in ph_meter_page.text
+        assert "전극 없이 색만 측정한다면" in indicator_page.text
+        assert "Δ색" in indicator_page.text
+        dashboard_page = client.get("/").text
+        assert "온도 최고점 부피" in dashboard_page
+        assert "지시약 색 종말점" in dashboard_page
+        assert "온도-시간" not in dashboard_page
 
 
 def test_measurement_websocket_tracks_connected_camera() -> None:

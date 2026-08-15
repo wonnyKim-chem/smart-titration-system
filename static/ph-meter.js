@@ -27,11 +27,15 @@ const canvas = document.querySelector("#processedFrame");
 const cameraStage = document.querySelector("#cameraStage");
 const cameraMessage = document.querySelector("#cameraMessage");
 const startButton = document.querySelector("#startCamera");
-const resetDisplayButton = document.querySelector("#resetDisplay");
+const selectPhRegionButton = document.querySelector("#selectPhRegion");
+const selectTemperatureRegionButton = document.querySelector("#selectTemperatureRegion");
+const enableTemperatureInput = document.querySelector("#enableTemperature");
 const selectionStatus = document.querySelector("#selectionStatus");
 const digitCountInput = document.querySelector("#digitCount");
+const temperatureDigitCountInput = document.querySelector("#temperatureDigitCount");
 const sampleInterval = document.querySelector("#sampleInterval");
 const livePh = document.querySelector("#livePh");
+const liveTemperature = document.querySelector("#liveTemperature");
 const visionStatus = document.querySelector("#visionStatus");
 const networkStatus = document.querySelector("#networkStatus");
 
@@ -39,11 +43,16 @@ let cameraCapture = null;
 let sourceFrame = null;
 let animationFrame = null;
 let lastMeasurementAt = 0;
+let lastTemperatureMeasurementAt = 0;
 let lastProcessedAt = 0;
 let displayRegion = JSON.parse(localStorage.getItem("titration-ph-display-region") ?? "null");
+let temperatureRegion = JSON.parse(localStorage.getItem("titration-temperature-display-region") ?? "null");
+let selectionTarget = "ph";
 let trackingFrameCount = 0;
 let failedReadingFrames = 0;
+let failedTemperatureFrames = 0;
 const recentReadings = [];
+const recentTemperatureReadings = [];
 const recorder = createCameraRecorder("ph");
 
 const socket = new ReliableMeasurementSocket("ph", (connected) => {
@@ -51,13 +60,15 @@ const socket = new ReliableMeasurementSocket("ph", (connected) => {
   networkStatus.classList.toggle("online", connected);
 });
 socket.connect();
+const temperatureSocket = new ReliableMeasurementSocket("temperature");
+temperatureSocket.connect();
 
-function getRoi(frame) {
-  if (!displayRegion) return null;
-  const x = Math.round(frame.cols * displayRegion.x);
-  const y = Math.round(frame.rows * displayRegion.y);
-  const width = Math.max(20, Math.min(Math.round(frame.cols * displayRegion.width), frame.cols - x));
-  const height = Math.max(20, Math.min(Math.round(frame.rows * displayRegion.height), frame.rows - y));
+function getRoi(frame, region = displayRegion) {
+  if (!region) return null;
+  const x = Math.round(frame.cols * region.x);
+  const y = Math.round(frame.rows * region.y);
+  const width = Math.max(20, Math.min(Math.round(frame.cols * region.width), frame.cols - x));
+  const height = Math.max(20, Math.min(Math.round(frame.rows * region.height), frame.rows - y));
   return new cv.Rect(x, y, width, height);
 }
 
@@ -78,8 +89,31 @@ function setDisplayRegion(rectangle, frame, resetReadings = true) {
       };
   localStorage.setItem("titration-ph-display-region", JSON.stringify(displayRegion));
   if (resetReadings) recentReadings.length = 0;
-  resetDisplayButton.disabled = false;
+  selectPhRegionButton.disabled = false;
   if (resetReadings) selectionStatus.textContent = "LCD 영역을 찾았습니다. 숫자를 읽는 중입니다.";
+}
+
+function setTemperatureRegion(rectangle, frame, resetReadings = true) {
+  const nextRegion = {
+    x: rectangle.x / frame.cols,
+    y: rectangle.y / frame.rows,
+    width: rectangle.width / frame.cols,
+    height: rectangle.height / frame.rows,
+  };
+  temperatureRegion = resetReadings || !temperatureRegion
+    ? nextRegion
+    : {
+        x: temperatureRegion.x * 0.7 + nextRegion.x * 0.3,
+        y: temperatureRegion.y * 0.7 + nextRegion.y * 0.3,
+        width: temperatureRegion.width * 0.7 + nextRegion.width * 0.3,
+        height: temperatureRegion.height * 0.7 + nextRegion.height * 0.3,
+      };
+  localStorage.setItem("titration-temperature-display-region", JSON.stringify(temperatureRegion));
+  if (resetReadings) {
+    recentTemperatureReadings.length = 0;
+    failedTemperatureFrames = 0;
+    selectionStatus.textContent = "온도계 영역을 찾았습니다. pH와 온도를 함께 읽는 중입니다.";
+  }
 }
 
 function findDisplayAroundPoint(frame, pointX, pointY, allowFallback = true) {
@@ -168,6 +202,22 @@ function trackDisplayRegion(frame, force = false) {
   return true;
 }
 
+function trackTemperatureRegion(frame) {
+  if (!temperatureRegion || trackingFrameCount % 15 !== 0) return;
+  const current = getRoi(frame, temperatureRegion);
+  if (!current) return;
+  const centerX = current.x + current.width / 2;
+  const centerY = current.y + current.height / 2;
+  const candidate = findDisplayAroundPoint(frame, centerX, centerY, false);
+  if (!candidate) return;
+  const candidateCenterX = candidate.x + candidate.width / 2;
+  const candidateCenterY = candidate.y + candidate.height / 2;
+  const distance = Math.hypot(candidateCenterX - centerX, candidateCenterY - centerY);
+  if (distance <= Math.max(current.width, current.height) * 1.4) {
+    setTemperatureRegion(candidate, frame, false);
+  }
+}
+
 function inspectImageQuality(gray) {
   const mean = new cv.Mat();
   const standardDeviation = new cv.Mat();
@@ -228,9 +278,8 @@ function recogniseDigit(digitImage) {
   return { digit: bestDistance <= 2 ? bestDigit : null, confidence: 1 - bestDistance / 7 };
 }
 
-function readDisplay(binary) {
-  const count = Number(digitCountInput.value);
-  const integerDigits = count - 2;
+function readDisplay(binary, count = Number(digitCountInput.value), decimalPlaces = 2) {
+  const integerDigits = count - decimalPlaces;
   const decimalGap = Math.round(binary.cols * 0.07);
   const digitWidth = (binary.cols - decimalGap) / count;
   const digits = [];
@@ -249,10 +298,12 @@ function readDisplay(binary) {
   }
 
   if (digits.some((digit) => digit === null)) return { value: null, confidence: 0 };
-  const numericText = `${digits.slice(0, integerDigits).join("")}.${digits.slice(integerDigits).join("")}`;
+  const numericText = decimalPlaces > 0
+    ? `${digits.slice(0, integerDigits).join("")}.${digits.slice(integerDigits).join("")}`
+    : digits.join("");
   const value = Number(numericText);
   return {
-    value: Number.isFinite(value) && value >= 0 && value <= 14.5 ? value : null,
+    value: Number.isFinite(value) ? value : null,
     confidence: confidences.reduce((sum, item) => sum + item, 0) / confidences.length,
   };
 }
@@ -277,11 +328,39 @@ function stabiliseReading(value) {
   return median;
 }
 
+function stabiliseTemperature(value) {
+  if (value === null || value < -100 || value > 300) {
+    failedTemperatureFrames += 1;
+    if (failedTemperatureFrames >= 8) recentTemperatureReadings.length = 0;
+    return null;
+  }
+  recentTemperatureReadings.push(value);
+  if (recentTemperatureReadings.length > 5) recentTemperatureReadings.shift();
+  if (recentTemperatureReadings.length < 3) return null;
+  const sorted = [...recentTemperatureReadings].sort((left, right) => left - right);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const closeReadings = sorted.filter((item) => Math.abs(item - median) <= 0.3);
+  if (closeReadings.length < 3) {
+    failedTemperatureFrames += 1;
+    return null;
+  }
+  failedTemperatureFrames = 0;
+  return median;
+}
+
 async function recordPh(value, timestamp) {
   await socket.storeAndSend({
     id: createMeasurementId("ph"),
     timestamp,
     ph: Number(value.toFixed(2)),
+  });
+}
+
+async function recordTemperature(value, timestamp) {
+  await temperatureSocket.storeAndSend({
+    id: createMeasurementId("temperature"),
+    timestamp,
+    temperature: Number(value.toFixed(1)),
   });
 }
 
@@ -321,6 +400,7 @@ function processFrame(timestamp) {
     return;
   }
   trackDisplayRegion(sourceFrame, failedReadingFrames >= 10);
+  if (enableTemperatureInput.checked) trackTemperatureRegion(sourceFrame);
   const displayFrame = sourceFrame.clone();
   const roiRectangle = getRoi(sourceFrame);
   if (roiRectangle) {
@@ -341,7 +421,9 @@ function processFrame(timestamp) {
     const darkReading = readDisplay(darkBinary);
     const lightReading = readDisplay(lightBinary);
     const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
-    const acceptedValue = imageQuality.usable && reading.confidence >= 0.68 ? reading.value : null;
+    const acceptedValue = imageQuality.usable && reading.confidence >= 0.68 && reading.value <= 14.5
+      ? reading.value
+      : null;
     const stableValue = stabiliseReading(acceptedValue);
 
     cv.rectangle(
@@ -378,12 +460,65 @@ function processFrame(timestamp) {
     kernel.delete();
   }
 
+  const temperatureRectangle = enableTemperatureInput.checked
+    ? getRoi(sourceFrame, temperatureRegion)
+    : null;
+  if (temperatureRectangle) {
+    const roi = sourceFrame.roi(temperatureRectangle);
+    const gray = new cv.Mat();
+    const blurred = new cv.Mat();
+    const darkBinary = new cv.Mat();
+    const lightBinary = new cv.Mat();
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+    const quality = inspectImageQuality(gray);
+    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+    cv.threshold(blurred, darkBinary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
+    cv.threshold(blurred, lightBinary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+    cv.morphologyEx(darkBinary, darkBinary, cv.MORPH_CLOSE, kernel);
+    cv.morphologyEx(lightBinary, lightBinary, cv.MORPH_CLOSE, kernel);
+    const count = Number(temperatureDigitCountInput.value);
+    const darkReading = readDisplay(darkBinary, count, 1);
+    const lightReading = readDisplay(lightBinary, count, 1);
+    const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
+    const temperature = stabiliseTemperature(
+      quality.usable && reading.confidence >= 0.68 ? reading.value : null,
+    );
+
+    cv.rectangle(
+      displayFrame,
+      new cv.Point(temperatureRectangle.x, temperatureRectangle.y),
+      new cv.Point(
+        temperatureRectangle.x + temperatureRectangle.width,
+        temperatureRectangle.y + temperatureRectangle.height,
+      ),
+      new cv.Scalar(68, 166, 204, 255),
+      3,
+    );
+    if (temperature !== null) {
+      liveTemperature.textContent = `${temperature.toFixed(1)} °C`;
+      if (timestamp - lastTemperatureMeasurementAt >= Number(sampleInterval.value)) {
+        lastTemperatureMeasurementAt = timestamp;
+        recordTemperature(temperature, Date.now());
+      }
+    }
+
+    roi.delete();
+    gray.delete();
+    blurred.delete();
+    darkBinary.delete();
+    lightBinary.delete();
+    kernel.delete();
+  }
+
   cv.imshow(canvas, displayFrame);
   canvas.classList.add("active");
-  if (displayRegion) {
+  if (displayRegion && (!enableTemperatureInput.checked || temperatureRegion)) {
     setCameraMessage(cameraMessage, "");
+  } else if (enableTemperatureInput.checked && !temperatureRegion) {
+    setCameraMessage(cameraMessage, "온도계 LCD 중앙을 터치하세요.");
   } else {
-    setCameraMessage(cameraMessage, "LCD 숫자 화면의 중앙을 한 번 터치하세요.");
+    setCameraMessage(cameraMessage, "pH 미터 LCD 중앙을 터치하세요.");
   }
   displayFrame.delete();
   animationFrame = requestAnimationFrame(processFrame);
@@ -401,7 +536,8 @@ async function startCamera() {
     cameraCapture = new cv.VideoCapture(video);
     startButton.querySelector("span").textContent = "카메라 실행 중";
     selectionStatus.textContent = displayRegion ? "저장된 LCD 영역을 확인하는 중입니다." : "카메라 화면에서 LCD 숫자를 터치하세요.";
-    resetDisplayButton.disabled = false;
+    selectPhRegionButton.disabled = false;
+    selectTemperatureRegionButton.disabled = !enableTemperatureInput.checked;
     animationFrame = requestAnimationFrame(processFrame);
   } catch (error) {
     startButton.disabled = false;
@@ -417,28 +553,64 @@ cameraStage.addEventListener("pointerup", (event) => {
   const bounds = canvas.getBoundingClientRect();
   const pointX = ((event.clientX - bounds.left) / bounds.width) * sourceFrame.cols;
   const pointY = ((event.clientY - bounds.top) / bounds.height) * sourceFrame.rows;
-  setDisplayRegion(findDisplayAroundPoint(sourceFrame, pointX, pointY), sourceFrame);
+  const rectangle = findDisplayAroundPoint(sourceFrame, pointX, pointY);
+  if (selectionTarget === "temperature" && enableTemperatureInput.checked) {
+    setTemperatureRegion(rectangle, sourceFrame);
+    selectionTarget = "ph";
+  } else {
+    setDisplayRegion(rectangle, sourceFrame);
+    if (enableTemperatureInput.checked && !temperatureRegion) {
+      selectionTarget = "temperature";
+      selectionStatus.textContent = "이제 온도계 LCD 중앙을 터치하세요.";
+    }
+  }
 });
-resetDisplayButton.addEventListener("click", () => {
+selectPhRegionButton.addEventListener("click", () => {
   displayRegion = null;
   localStorage.removeItem("titration-ph-display-region");
   recentReadings.length = 0;
   failedReadingFrames = 0;
   livePh.textContent = "pH --.--";
-  selectionStatus.textContent = "카메라 화면에서 LCD 숫자를 터치하세요.";
-  setCameraMessage(cameraMessage, "LCD 숫자 화면의 중앙을 한 번 터치하세요.");
+  selectionTarget = "ph";
+  selectionStatus.textContent = "카메라 화면에서 pH 미터 LCD를 터치하세요.";
+  setCameraMessage(cameraMessage, "pH 미터 LCD 중앙을 터치하세요.");
+});
+selectTemperatureRegionButton.addEventListener("click", () => {
+  temperatureRegion = null;
+  localStorage.removeItem("titration-temperature-display-region");
+  recentTemperatureReadings.length = 0;
+  failedTemperatureFrames = 0;
+  liveTemperature.textContent = "--.- °C";
+  selectionTarget = "temperature";
+  selectionStatus.textContent = "카메라 화면에서 온도계 LCD를 터치하세요.";
+  setCameraMessage(cameraMessage, "온도계 LCD 중앙을 터치하세요.");
+});
+enableTemperatureInput.addEventListener("change", () => {
+  liveTemperature.classList.toggle("hidden", !enableTemperatureInput.checked);
+  selectTemperatureRegionButton.disabled = !enableTemperatureInput.checked || !cameraCapture;
+  if (enableTemperatureInput.checked && !temperatureRegion) {
+    selectionTarget = "temperature";
+    selectionStatus.textContent = "온도계 LCD 중앙을 터치하면 pH와 함께 측정합니다.";
+  } else if (!enableTemperatureInput.checked) {
+    selectionTarget = "ph";
+  }
 });
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);
   sourceFrame?.delete();
   video.srcObject?.getTracks().forEach((track) => track.stop());
   socket.stop();
+  temperatureSocket.stop();
   recorder.dispose();
 });
 
 waitForOpenCv(visionStatus).catch(() => {
   visionStatus.textContent = "로드 실패";
 });
+if (temperatureRegion) {
+  enableTemperatureInput.checked = true;
+  liveTemperature.classList.remove("hidden");
+}
 if (!globalThis.isSecureContext) {
   setCameraMessage(cameraMessage, describeCameraError({ name: "InsecureContextError" }), "error");
   startButton.disabled = true;

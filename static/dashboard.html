@@ -15,7 +15,7 @@
         <div class="brand-mark">∂</div>
         <div>
           <p class="eyebrow">Live Analysis</p>
-          <h1>실시간 pH 적정 곡선</h1>
+          <h1>실시간 적정 분석</h1>
         </div>
       </div>
       <span id="networkStatus" class="status">서버 연결 중</span>
@@ -31,18 +31,41 @@
           <h2 id="derivativeTitle" class="hidden">1차 미분 대 부피</h2>
           <div id="derivativePlot" class="plot"></div>
         </section>
+        <section class="plot-panel" aria-labelledby="temperatureTitle">
+          <h2 id="temperatureTitle" class="hidden">온도 대 부피</h2>
+          <div id="temperaturePlot" class="plot"></div>
+        </section>
+        <section class="plot-panel" aria-labelledby="colorTitle">
+          <h2 id="colorTitle" class="hidden">Δ색 대 부피</h2>
+          <div id="colorPlot" class="plot"></div>
+        </section>
       </div>
 
       <aside class="control-panel">
-        <section class="equivalence">
-          <span>당량점 부피</span>
-          <strong id="equivalenceVolume">--.--</strong>
-          <span id="equivalencePh">pH --.--</span>
+        <div class="endpoint-grid">
+          <section class="endpoint-summary equivalence">
+            <span>pH 당량점</span><strong id="equivalenceVolume">--.--</strong><span id="equivalencePh">pH --.--</span>
+          </section>
+          <section class="endpoint-summary color-endpoint">
+            <span>지시약 색 종말점</span><strong id="colorEndpointVolume">--.--</strong><span id="colorEndpointDelta">Δ색 --.-</span>
+          </section>
+          <section class="endpoint-summary temperature-peak">
+            <span>온도 최고점 부피</span><strong id="temperaturePeakVolume">--.--</strong><span id="temperaturePeak">--.- °C</span>
+          </section>
+        </div>
+
+        <section id="colorCalibrationNotice" class="calibration-warning hidden">
+          <h2>색 종말점 보정이 필요합니다</h2>
+          <p>pH/ORP 전극 없이 색만 사용하는 경우, 같은 지시약 농도와 조명에서 계산된 당량점 또는 전극을 사용한 기준 실험으로 종말점 색과 부피를 먼저 확인하세요. 절대 pH/ORP가 필요하면 알려진 표준용액을 최소 두 개 이상 촬영해 별도 보정 곡선을 만들어야 합니다.</p>
         </section>
+
+        <div id="sensorWarnings" class="sensor-warnings hidden"></div>
 
         <div class="metric-row">
           <div class="metric"><span>부피 레코드</span><strong id="volumeCount">0</strong></div>
           <div class="metric"><span>pH 레코드</span><strong id="phCount">0</strong></div>
+          <div class="metric"><span>온도 레코드</span><strong id="temperatureCount">0</strong></div>
+          <div class="metric"><span>색 레코드</span><strong id="colorCount">0</strong></div>
           <div class="metric"><span>시간 정합</span><strong id="matchedCount">0</strong></div>
           <div class="metric"><span>갱신 시각</span><strong id="updatedAt">--:--:--</strong></div>
         </div>
@@ -54,7 +77,10 @@
               <i data-lucide="ruler"></i><span>뷰렛 카메라</span>
             </a>
             <a class="button-link secondary" href="/ph-meter">
-              <i data-lucide="scan-line"></i><span>pH 계측기 카메라</span>
+              <i data-lucide="scan-line"></i><span>pH · 온도 카메라</span>
+            </a>
+            <a class="button-link secondary" href="/indicator">
+              <i data-lucide="flask-conical"></i><span>지시약 색 카메라</span>
             </a>
           </nav>
         </section>

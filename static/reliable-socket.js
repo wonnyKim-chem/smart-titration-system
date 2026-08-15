@@ -1,4 +1,5 @@
 import {
+  getClientId,
   getPendingMeasurements,
   markMeasurementsSynced,
   saveMeasurement,
@@ -7,6 +8,7 @@ import {
 export class ReliableMeasurementSocket {
   constructor(channel, onConnectionChange = () => {}) {
     this.channel = channel;
+    this.clientId = getClientId(channel);
     this.onConnectionChange = onConnectionChange;
     this.socket = null;
     this.retryDelay = 500;
@@ -54,7 +56,7 @@ export class ReliableMeasurementSocket {
 
   async storeAndSend(measurement) {
     // 네트워크 상태와 관계없이 로컬 저장 완료를 전송보다 먼저 보장한다.
-    await saveMeasurement(this.channel, measurement);
+    await saveMeasurement(this.channel, { ...measurement, clientId: this.clientId });
     await this.flush();
   }
 
@@ -63,7 +65,9 @@ export class ReliableMeasurementSocket {
     this.flushing = true;
     try {
       const pending = await getPendingMeasurements(this.channel);
-      const records = pending.filter((record) => !this.inflightIds.has(record.id));
+      const records = pending
+        .filter((record) => !this.inflightIds.has(record.id))
+        .map((record) => ({ ...record, clientId: record.clientId ?? this.clientId }));
       if (!records.length) return;
       records.forEach((record) => this.inflightIds.add(record.id));
       this.socket.send(JSON.stringify({ type: "batch", records }));

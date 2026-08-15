@@ -27,7 +27,15 @@ SYNC_TOLERANCE_MS = 1_500
 MAX_RECORDING_BYTES = 1_500 * 1024 * 1024
 RECORDING_NAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
-Channel = Literal["burette", "ph"]
+Channel = Literal["burette", "ph", "temperature", "color"]
+
+CHANNEL_FIELDS: dict[Channel, tuple[str, ...]] = {
+    "burette": ("volume",),
+    "ph": ("ph",),
+    "temperature": ("temperature",),
+    "color": ("red", "green", "blue", "hue", "saturation", "lightness", "deltaColor"),
+}
+AVERAGING_BUCKET_MS = 500
 
 
 class MeasurementHub:
@@ -35,13 +43,11 @@ class MeasurementHub:
 
     def __init__(self) -> None:
         self.streams: dict[Channel, deque[dict[str, Any]]] = {
-            "burette": deque(maxlen=MAX_STREAM_SIZE),
-            "ph": deque(maxlen=MAX_STREAM_SIZE),
+            channel: deque(maxlen=MAX_STREAM_SIZE) for channel in CHANNEL_FIELDS
         }
-        self.seen_ids: dict[Channel, set[str]] = {"burette": set(), "ph": set()}
+        self.seen_ids: dict[Channel, set[str]] = {channel: set() for channel in CHANNEL_FIELDS}
         self.measurement_clients: dict[Channel, set[WebSocket]] = {
-            "burette": set(),
-            "ph": set(),
+            channel: set() for channel in CHANNEL_FIELDS
         }
         self.dashboard_clients: set[WebSocket] = set()
         self.lock = asyncio.Lock()
@@ -58,23 +64,41 @@ class MeasurementHub:
             "equivalenceVolume": None,
             "equivalencePh": None,
             "matchedCount": 0,
+            "temperatureVolume": [],
+            "temperature": [],
+            "temperaturePeakVolume": None,
+            "temperaturePeak": None,
+            "colorVolume": [],
+            "deltaColor": [],
+            "colorEndpointVolume": None,
+            "colorEndpointDelta": None,
+            "clientCounts": {channel: 0 for channel in CHANNEL_FIELDS},
+            "sensorWarnings": [],
         }
 
     @staticmethod
     def _normalise_record(channel: Channel, record: dict[str, Any]) -> dict[str, Any]:
-        value_key = "volume" if channel == "burette" else "ph"
         record_id = str(record.get("id", "")).strip()
         if not record_id:
             raise ValueError("측정값 id가 필요합니다.")
 
         timestamp = float(record["timestamp"])
-        value = float(record[value_key])
-        if not np.isfinite(timestamp) or not np.isfinite(value):
+        values = {field: float(record[field]) for field in CHANNEL_FIELDS[channel]}
+        if not np.isfinite(timestamp) or not all(np.isfinite(value) for value in values.values()):
             raise ValueError("측정값은 유한한 숫자여야 합니다.")
-        if channel == "ph" and not 0 <= value <= 14.5:
+        if channel == "ph" and not 0 <= values["ph"] <= 14.5:
             raise ValueError("pH 값이 허용 범위를 벗어났습니다.")
+        if channel == "temperature" and not -100 <= values["temperature"] <= 300:
+            raise ValueError("온도 값이 허용 범위를 벗어났습니다.")
+        if channel == "color" and not all(0 <= values[field] <= 255 for field in ("red", "green", "blue")):
+            raise ValueError("RGB 값이 허용 범위를 벗어났습니다.")
 
-        return {"id": record_id, "timestamp": timestamp, value_key: value}
+        return {
+            "id": record_id,
+            "clientId": str(record.get("clientId", "legacy-client"))[:120],
+            "timestamp": timestamp,
+            **values,
+        }
 
     async def ingest(
         self, channel: Channel, records: list[dict[str, Any]]
@@ -102,7 +126,10 @@ class MeasurementHub:
                 accepted_ids.append(record_id)
 
             self.latest_analysis = analyse_streams(
-                list(self.streams["burette"]), list(self.streams["ph"])
+                list(self.streams["burette"]),
+                list(self.streams["ph"]),
+                list(self.streams["temperature"]),
+                list(self.streams["color"]),
             )
             snapshot = self.snapshot()
 
@@ -114,8 +141,7 @@ class MeasurementHub:
             "type": "analysis",
             "serverTimestamp": int(time.time() * 1000),
             "streamCounts": {
-                "burette": len(self.streams["burette"]),
-                "ph": len(self.streams["ph"]),
+                channel: len(self.streams[channel]) for channel in CHANNEL_FIELDS
             },
             **self.latest_analysis,
         }
@@ -167,13 +193,133 @@ def match_by_timestamp(
     return np.asarray(paired_volumes), np.asarray(paired_ph)
 
 
+def average_clients_by_time(
+    records: list[dict[str, Any]], fields: tuple[str, ...], bucket_ms: int = AVERAGING_BUCKET_MS
+) -> list[dict[str, Any]]:
+    """시간 구간마다 각 클라이언트를 동일 가중치로 평균한다."""
+    if not records:
+        return []
+
+    client_buckets: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for record in records:
+        bucket = int(float(record["timestamp"]) // bucket_ms)
+        client_id = str(record.get("clientId", "legacy-client"))
+        client_buckets.setdefault((bucket, client_id), []).append(record)
+
+    per_client: dict[int, list[dict[str, float]]] = {}
+    for (bucket, _), items in client_buckets.items():
+        averaged = {
+            "timestamp": float(np.mean([float(item["timestamp"]) for item in items])),
+            **{
+                field: float(np.mean([float(item[field]) for item in items]))
+                for field in fields
+            },
+        }
+        per_client.setdefault(bucket, []).append(averaged)
+
+    result: list[dict[str, Any]] = []
+    for bucket in sorted(per_client):
+        client_values = per_client[bucket]
+        result.append(
+            {
+                "timestamp": float(np.mean([item["timestamp"] for item in client_values])),
+                "clientCount": len(client_values),
+                **{
+                    field: float(np.mean([item[field] for item in client_values]))
+                    for field in fields
+                },
+                "spread": {
+                    field: float(np.ptp([item[field] for item in client_values]))
+                    for field in fields
+                },
+            }
+        )
+    return result
+
+
+def match_field_to_volume(
+    volume_records: list[dict[str, Any]], value_records: list[dict[str, Any]], field: str
+) -> tuple[np.ndarray, np.ndarray]:
+    return match_by_timestamp(
+        volume_records,
+        [{"timestamp": record["timestamp"], "ph": record[field]} for record in value_records],
+    )
+
+
 def analyse_streams(
-    volume_records: list[dict[str, Any]], ph_records: list[dict[str, Any]]
+    volume_records: list[dict[str, Any]],
+    ph_records: list[dict[str, Any]],
+    temperature_records: list[dict[str, Any]] | None = None,
+    color_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """동기화된 곡선을 평활화하고 미분하여 당량점을 찾는다."""
-    paired_volume, paired_ph = match_by_timestamp(volume_records, ph_records)
+    """클라이언트 평균 곡선에서 당량점, 온도 최고점과 색 종말점을 찾는다."""
+    averaged_volume = average_clients_by_time(volume_records, ("volume",))
+    averaged_ph = average_clients_by_time(ph_records, ("ph",))
+    averaged_temperature = average_clients_by_time(temperature_records or [], ("temperature",))
+    averaged_color = average_clients_by_time(color_records or [], CHANNEL_FIELDS["color"])
+    result = MeasurementHub._empty_analysis()
+    result["clientCounts"] = {
+        "burette": max((record["clientCount"] for record in averaged_volume), default=0),
+        "ph": max((record["clientCount"] for record in averaged_ph), default=0),
+        "temperature": max((record["clientCount"] for record in averaged_temperature), default=0),
+        "color": max((record["clientCount"] for record in averaged_color), default=0),
+    }
+    warnings: list[str] = []
+    if any(record["spread"]["volume"] > 0.15 for record in averaged_volume):
+        warnings.append("뷰렛 클라이언트 간 부피 차이가 0.15 mL를 넘었습니다.")
+    if any(record["spread"]["ph"] > 0.15 for record in averaged_ph):
+        warnings.append("pH 클라이언트 간 차이가 0.15를 넘었습니다.")
+    if any(record["spread"]["temperature"] > 1.0 for record in averaged_temperature):
+        warnings.append("온도 클라이언트 간 차이가 1.0 °C를 넘었습니다.")
+    result["sensorWarnings"] = warnings
+
+    temperature_volume, temperature_values = match_field_to_volume(
+        averaged_volume, averaged_temperature, "temperature"
+    )
+    if temperature_volume.size:
+        order = np.argsort(temperature_volume)
+        temperature_volume = temperature_volume[order]
+        temperature_values = temperature_values[order]
+        if temperature_values.size >= 5:
+            window = min(9, int(temperature_values.size))
+            if window % 2 == 0:
+                window -= 1
+            temperature_values = savgol_filter(temperature_values, window, min(2, window - 1))
+        peak_index = int(np.argmax(temperature_values))
+        result.update(
+            {
+                "temperatureVolume": temperature_volume.round(4).tolist(),
+                "temperature": temperature_values.round(3).tolist(),
+                "temperaturePeakVolume": round(float(temperature_volume[peak_index]), 4),
+                "temperaturePeak": round(float(temperature_values[peak_index]), 3),
+            }
+        )
+
+    color_volume, delta_color = match_field_to_volume(averaged_volume, averaged_color, "deltaColor")
+    if color_volume.size:
+        order = np.argsort(color_volume)
+        color_volume = color_volume[order]
+        delta_color = delta_color[order]
+        if delta_color.size >= 5:
+            window = min(9, int(delta_color.size))
+            if window % 2 == 0:
+                window -= 1
+            delta_color = savgol_filter(delta_color, window, min(2, window - 1))
+            endpoint_index = int(np.argmax(np.abs(np.gradient(delta_color, color_volume))))
+        else:
+            endpoint_index = int(np.argmax(delta_color))
+        result.update(
+            {
+                "colorVolume": color_volume.round(4).tolist(),
+                "deltaColor": delta_color.round(3).tolist(),
+                "colorEndpointVolume": round(float(color_volume[endpoint_index]), 4),
+                "colorEndpointDelta": round(float(delta_color[endpoint_index]), 3),
+            }
+        )
+
+    paired_volume, paired_ph = match_by_timestamp(averaged_volume, averaged_ph)
     if paired_volume.size == 0:
-        return MeasurementHub._empty_analysis()
+        return result
 
     order = np.argsort(paired_volume)
     paired_volume = paired_volume[order]
@@ -187,7 +333,6 @@ def analyse_streams(
     np.add.at(ph_count, inverse, 1)
     unique_ph = ph_sum / ph_count
 
-    result = MeasurementHub._empty_analysis()
     result["volume"] = unique_volume.round(4).tolist()
     result["ph"] = unique_ph.round(4).tolist()
     result["matchedCount"] = int(paired_volume.size)
@@ -347,6 +492,11 @@ async def ph_meter_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "ph-meter.html")
 
 
+@app.get("/indicator")
+async def indicator_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "indicator.html")
+
+
 @app.websocket("/ws/dashboard")
 async def dashboard_socket(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -362,7 +512,7 @@ async def dashboard_socket(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/{channel}")
 async def measurement_socket(websocket: WebSocket, channel: str) -> None:
-    if channel not in ("burette", "ph"):
+    if channel not in CHANNEL_FIELDS:
         await websocket.close(code=1008, reason="지원하지 않는 측정 채널입니다.")
         return
 
