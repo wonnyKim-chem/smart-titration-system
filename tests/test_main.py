@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import (
-    SYNC_TOLERANCE_MS,
+    MAX_EXTRAPOLATION_MS,
+    MAX_INTERPOLATION_GAP_MS,
     analyse_streams,
     app,
     average_clients_by_time,
@@ -75,19 +76,86 @@ def test_temperature_peak_and_color_endpoint_without_ph() -> None:
     assert result["equivalenceVolume"] is None
 
 
-def test_timestamp_matching_respects_tolerance() -> None:
+def test_timestamp_matching_interpolates_at_volume_times() -> None:
     volumes = [
         {"id": "v1", "timestamp": 1_000, "volume": 1.0},
+        {"id": "v2", "timestamp": 1_500, "volume": 2.0},
+        {"id": "v3", "timestamp": 2_000, "volume": 3.0},
     ]
     ph_values = [
-        {"id": "p1", "timestamp": 1_000 + SYNC_TOLERANCE_MS, "ph": 3.0},
-        {"id": "p2", "timestamp": 1_001 + SYNC_TOLERANCE_MS, "ph": 4.0},
+        {"id": "p1", "timestamp": 1_000, "ph": 2.0},
+        {"id": "p2", "timestamp": 2_000, "ph": 4.0},
+    ]
+
+    matched_volume, matched_ph = match_by_timestamp(volumes, ph_values)
+
+    assert matched_volume.tolist() == [1.0, 2.0, 3.0]
+    assert matched_ph.tolist() == [2.0, 3.0, 4.0]
+
+
+def test_timestamp_matching_rejects_large_source_gap() -> None:
+    volumes = [{"timestamp": 2_000, "volume": 2.0}]
+    ph_values = [
+        {"timestamp": 1_000, "ph": 2.0},
+        {"timestamp": 1_000 + MAX_INTERPOLATION_GAP_MS + 1, "ph": 4.0},
+    ]
+
+    matched_volume, matched_ph = match_by_timestamp(volumes, ph_values)
+
+    assert matched_volume.size == 0
+    assert matched_ph.size == 0
+
+
+def test_timestamp_matching_limits_linear_extrapolation() -> None:
+    ph_values = [
+        {"timestamp": 1_000, "ph": 2.0},
+        {"timestamp": 1_500, "ph": 3.0},
+    ]
+    volumes = [
+        {"timestamp": 1_000 - MAX_EXTRAPOLATION_MS, "volume": 1.0},
+        {"timestamp": 1_500 + MAX_EXTRAPOLATION_MS, "volume": 2.0},
+        {"timestamp": 1_501 + MAX_EXTRAPOLATION_MS, "volume": 3.0},
+    ]
+
+    matched_volume, matched_ph = match_by_timestamp(volumes, ph_values)
+
+    assert matched_volume.tolist() == [1.0, 2.0]
+    assert matched_ph.tolist() == [1.0, 4.0]
+
+
+def test_duplicate_sensor_timestamps_are_averaged() -> None:
+    volumes = [{"timestamp": 1_000, "volume": 1.0}]
+    ph_values = [
+        {"timestamp": 1_000, "ph": 2.0},
+        {"timestamp": 1_000, "ph": 4.0},
     ]
 
     matched_volume, matched_ph = match_by_timestamp(volumes, ph_values)
 
     assert matched_volume.tolist() == [1.0]
     assert matched_ph.tolist() == [3.0]
+
+
+def test_normalise_record_preserves_clock_correction_metadata() -> None:
+    record = hub._normalise_record(
+        "ph",
+        {
+            "id": "p1",
+            "clientId": "phone-a",
+            "clientTimestamp": 1_000,
+            "timestamp": 1_125,
+            "clockOffsetMs": 125,
+            "clockRttMs": 9,
+            "clockSynchronized": True,
+            "ph": 7.0,
+        },
+    )
+
+    assert record["clientTimestamp"] == 1_000
+    assert record["timestamp"] == 1_125
+    assert record["clockOffsetMs"] == 125
+    assert record["clockRttMs"] == 9
+    assert record["clockSynchronized"] is True
 
 
 def test_analysis_finds_logistic_equivalence_point() -> None:
@@ -154,7 +222,8 @@ def test_health_and_static_pages() -> None:
         assert 'id="toggleDeleteMode"' in dashboard_page
         assert 'value="실험 1"' in dashboard_page
         assert 'aria-label="평활화 설명"' in dashboard_page
-        assert 'aria-label="동기 허용차 설명"' in dashboard_page
+        assert 'aria-label="시간 정합 설명"' in dashboard_page
+        assert "부피 기준" in dashboard_page
         assert 'aria-label="Δ색 계산 설명"' in dashboard_page
         assert 'id="experimentStatus"' in burette_page.text
         assert 'id="experimentStatus"' in ph_meter_page.text
@@ -165,6 +234,21 @@ def test_measurement_websocket_tracks_connected_camera() -> None:
         with client.websocket_connect("/ws/burette"):
             assert len(hub.measurement_clients["burette"]) == 1
         assert len(hub.measurement_clients["burette"]) == 0
+
+
+def test_measurement_websocket_returns_ntp_style_time_sample() -> None:
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/ph") as websocket:
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "time-sync", "sequence": 3, "clientSendTimestamp": 1_000}
+            )
+            response = websocket.receive_json()
+
+    assert response["type"] == "time-sync"
+    assert response["sequence"] == 3
+    assert response["clientSendTimestamp"] == 1_000
+    assert response["serverReceiveTimestamp"] <= response["serverSendTimestamp"]
 
 
 def test_recording_upload_list_and_download(

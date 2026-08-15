@@ -31,7 +31,8 @@ from experiment_store import ExperimentStore, normalise_title
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 MAX_STREAM_SIZE = 20_000
-SYNC_TOLERANCE_MS = 1_500
+MAX_INTERPOLATION_GAP_MS = 2_000
+MAX_EXTRAPOLATION_MS = 500
 MAX_RECORDING_BYTES = 1_500 * 1024 * 1024
 RECORDING_NAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -135,12 +136,19 @@ class MeasurementHub:
         if channel == "color" and not all(0 <= values[field] <= 255 for field in ("red", "green", "blue")):
             raise ValueError("RGB 값이 허용 범위를 벗어났습니다.")
 
-        return {
+        normalised = {
             "id": record_id,
             "clientId": str(record.get("clientId", "legacy-client"))[:120],
             "timestamp": timestamp,
             **values,
         }
+        for field in ("clientTimestamp", "clockOffsetMs", "clockRttMs"):
+            if record.get(field) is not None:
+                value = float(record[field])
+                if np.isfinite(value):
+                    normalised[field] = value
+        normalised["clockSynchronized"] = bool(record.get("clockSynchronized", False))
+        return normalised
 
     async def ingest(
         self, channel: Channel, records: list[dict[str, Any]]
@@ -272,30 +280,69 @@ class MeasurementHub:
 def match_by_timestamp(
     volume_records: list[dict[str, Any]], ph_records: list[dict[str, Any]]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """각 pH 시각과 가장 가까운 부피 측정값을 허용 오차 안에서 연결한다."""
-    if not volume_records or not ph_records:
+    """부피 측정 시각마다 pH를 제한된 선형 내삽·외삽으로 근사한다."""
+    return match_field_to_volume(volume_records, ph_records, "ph")
+
+
+def _deduplicate_time_series(
+    records: list[dict[str, Any]], field: str
+) -> tuple[np.ndarray, np.ndarray]:
+    grouped: dict[float, list[float]] = {}
+    for record in records:
+        grouped.setdefault(float(record["timestamp"]), []).append(float(record[field]))
+    timestamps = np.asarray(sorted(grouped), dtype=float)
+    values = np.asarray([np.mean(grouped[timestamp]) for timestamp in timestamps], dtype=float)
+    return timestamps, values
+
+
+def _approximate_at_timestamp(
+    timestamp: float, source_times: np.ndarray, source_values: np.ndarray
+) -> float | None:
+    insertion = int(np.searchsorted(source_times, timestamp))
+    if insertion < source_times.size and source_times[insertion] == timestamp:
+        return float(source_values[insertion])
+    if source_times.size < 2:
+        return None
+
+    if 0 < insertion < source_times.size:
+        left, right = insertion - 1, insertion
+    elif insertion == 0:
+        if source_times[0] - timestamp > MAX_EXTRAPOLATION_MS:
+            return None
+        left, right = 0, 1
+    else:
+        if timestamp - source_times[-1] > MAX_EXTRAPOLATION_MS:
+            return None
+        left, right = source_times.size - 2, source_times.size - 1
+
+    interval = source_times[right] - source_times[left]
+    if interval <= 0 or interval > MAX_INTERPOLATION_GAP_MS:
+        return None
+    ratio = (timestamp - source_times[left]) / interval
+    return float(source_values[left] + ratio * (source_values[right] - source_values[left]))
+
+
+def match_field_to_volume(
+    volume_records: list[dict[str, Any]], value_records: list[dict[str, Any]], field: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """부피 시각을 기준축으로 센서 값을 제한적으로 근사한다."""
+    if not volume_records or not value_records:
         return np.array([], dtype=float), np.array([], dtype=float)
 
     volumes_sorted = sorted(volume_records, key=lambda item: item["timestamp"])
-    ph_sorted = sorted(ph_records, key=lambda item: item["timestamp"])
-    volume_times = np.asarray(
-        [item["timestamp"] for item in volumes_sorted], dtype=float
-    )
+    source_times, source_values = _deduplicate_time_series(value_records, field)
 
     paired_volumes: list[float] = []
-    paired_ph: list[float] = []
-    for ph_record in ph_sorted:
-        timestamp = ph_record["timestamp"]
-        insertion = int(np.searchsorted(volume_times, timestamp))
-        candidates = [index for index in (insertion - 1, insertion) if 0 <= index < len(volume_times)]
-        if not candidates:
-            continue
-        closest = min(candidates, key=lambda index: abs(volume_times[index] - timestamp))
-        if abs(volume_times[closest] - timestamp) <= SYNC_TOLERANCE_MS:
-            paired_volumes.append(float(volumes_sorted[closest]["volume"]))
-            paired_ph.append(float(ph_record["ph"]))
+    paired_values: list[float] = []
+    for volume_record in volumes_sorted:
+        approximated = _approximate_at_timestamp(
+            float(volume_record["timestamp"]), source_times, source_values
+        )
+        if approximated is not None:
+            paired_volumes.append(float(volume_record["volume"]))
+            paired_values.append(approximated)
 
-    return np.asarray(paired_volumes), np.asarray(paired_ph)
+    return np.asarray(paired_volumes), np.asarray(paired_values)
 
 
 def average_clients_by_time(
@@ -340,15 +387,6 @@ def average_clients_by_time(
             }
         )
     return result
-
-
-def match_field_to_volume(
-    volume_records: list[dict[str, Any]], value_records: list[dict[str, Any]], field: str
-) -> tuple[np.ndarray, np.ndarray]:
-    return match_by_timestamp(
-        volume_records,
-        [{"timestamp": record["timestamp"], "ph": record[field]} for record in value_records],
-    )
 
 
 def analyse_streams(
@@ -892,6 +930,18 @@ async def dashboard_socket(websocket: WebSocket) -> None:
     try:
         while True:
             message = await websocket.receive_json()
+            if message.get("type") == "time-sync":
+                server_receive_timestamp = time.time() * 1000
+                await websocket.send_json(
+                    {
+                        "type": "time-sync",
+                        "sequence": message.get("sequence"),
+                        "clientSendTimestamp": message.get("clientSendTimestamp"),
+                        "serverReceiveTimestamp": server_receive_timestamp,
+                        "serverSendTimestamp": time.time() * 1000,
+                    }
+                )
+                continue
             if message.get("type") == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": int(time.time() * 1000)})
     except WebSocketDisconnect:
@@ -916,6 +966,18 @@ async def measurement_socket(websocket: WebSocket, channel: str) -> None:
     try:
         while True:
             message = await websocket.receive_json()
+            if message.get("type") == "time-sync":
+                server_receive_timestamp = time.time() * 1000
+                await websocket.send_json(
+                    {
+                        "type": "time-sync",
+                        "sequence": message.get("sequence"),
+                        "clientSendTimestamp": message.get("clientSendTimestamp"),
+                        "serverReceiveTimestamp": server_receive_timestamp,
+                        "serverSendTimestamp": time.time() * 1000,
+                    }
+                )
+                continue
             if message.get("type") == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": int(time.time() * 1000)})
                 continue
