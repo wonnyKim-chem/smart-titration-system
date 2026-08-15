@@ -118,6 +118,17 @@ def test_switching_view_keeps_recording_and_continue_creation_copies_data(
             "/api/experiments",
             json={"title": "첫 실험", "recordingAction": "continue"},
         )
+        assert created.status_code == 409
+        assert created.json()["code"] == "duplicate-title"
+        assert created.json()["suggestedTitle"] == "첫 실험 (1)"
+        created = client.post(
+            "/api/experiments",
+            json={
+                "title": "첫 실험",
+                "recordingAction": "continue",
+                "duplicateAction": "suffix",
+            },
+        )
         second_id = created.json()["experiment"]["id"]
         assert created.json()["experiment"]["title"] == "첫 실험 (1)"
         assert created.json()["experiment"]["status"] == "recording"
@@ -154,3 +165,32 @@ def test_switching_view_keeps_recording_and_continue_creation_copies_data(
         second = isolated_experiments.load(second_id)
         assert first["streams"]["burette"][-1]["id"] == "shared-volume"
         assert second["streams"]["burette"][-1]["id"] == "shared-volume"
+
+
+def test_duplicate_title_never_overwrites_and_delete_is_permanent(
+    isolated_experiments: ExperimentStore,
+) -> None:
+    with TestClient(main.app) as client:
+        first = client.post("/api/experiments", json={"title": "반복 실험"}).json()[
+            "experiment"
+        ]
+        duplicate = client.post("/api/experiments", json={"title": "반복 실험"})
+
+        assert duplicate.status_code == 409
+        assert duplicate.json()["code"] == "duplicate-title"
+        assert duplicate.json()["suggestedTitle"] == "반복 실험 (1)"
+        assert len(isolated_experiments.list()) == 1
+
+        suffixed = client.post(
+            "/api/experiments",
+            json={"title": "반복 실험", "duplicateAction": "suffix"},
+        )
+        assert suffixed.status_code == 201
+        assert suffixed.json()["experiment"]["title"] == "반복 실험 (1)"
+        assert len(isolated_experiments.list()) == 2
+
+        deleted = client.delete(f"/api/experiments/{first['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"]["title"] == "반복 실험"
+        assert not (isolated_experiments.directory / f"{first['id']}.json").exists()
+        assert [item["title"] for item in isolated_experiments.list()] == ["반복 실험 (1)"]

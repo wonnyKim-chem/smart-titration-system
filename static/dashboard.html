@@ -89,7 +89,11 @@
 
         <section class="experiment-list-section">
           <div class="section-heading-row">
-            <h2>실험 목록</h2><button id="refreshExperiments" class="icon-command" type="button" title="목록 새로고침"><i data-lucide="refresh-cw"></i></button>
+            <h2>실험 목록</h2>
+            <div class="list-tools">
+              <button id="refreshExperiments" class="icon-command" type="button" title="목록 새로고침"><i data-lucide="refresh-cw"></i></button>
+              <button id="toggleDeleteMode" class="icon-command" type="button" title="실험 삭제 모드"><i data-lucide="trash-2"></i></button>
+            </div>
           </div>
           <div id="experimentList" class="experiment-list"><p>저장된 실험이 없습니다.</p></div>
         </section>
@@ -148,6 +152,17 @@
         <button id="stopAndCreate" class="secondary" type="button"><i data-lucide="square"></i><span>기존 입력 모두 중지 · 새 실험 생성</span></button>
       </div>
       <button id="cancelConflict" class="secondary" type="button">취소</button>
+    </dialog>
+
+    <dialog id="duplicateTitleDialog" class="guided-dialog">
+      <p class="step-label">같은 실험 제목</p>
+      <h2>같은 제목의 실험이 이미 있습니다</h2>
+      <p id="duplicateTitleMessage">기존과 같은 제목의 실험을 추가할 수 없습니다. 기존 데이터는 덮어쓰지 않습니다.</p>
+      <div class="dialog-choice-grid">
+        <button id="addTitleSuffix" type="button"><i data-lucide="copy-plus"></i><span id="suffixTitleLabel">(1)을 붙여 추가</span></button>
+        <button id="retryExperimentTitle" class="secondary" type="button"><i data-lucide="pencil"></i><span>제목 다시 입력</span></button>
+      </div>
+      <button id="cancelDuplicateTitle" class="secondary" type="button">취소</button>
     </dialog>
 
     <script type="module" src="/static/dashboard.js"></script>

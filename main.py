@@ -78,6 +78,15 @@ class MeasurementHub:
             list(self.streams["color"]),
         )
 
+    def clear_selection(self) -> None:
+        """선택할 실험이 없을 때 메모리 분석 상태를 비운다."""
+        self.active_experiment = None
+        self.experiment_store.active_id = None
+        for channel in CHANNEL_FIELDS:
+            self.streams[channel].clear()
+            self.seen_ids[channel].clear()
+        self.latest_analysis = self._empty_analysis()
+
     def persist_active_experiment(self) -> None:
         if not self.active_experiment:
             return
@@ -646,6 +655,22 @@ async def create_experiment(request: Request) -> JSONResponse:
         payload = await request.json()
     except (ValueError, TypeError):
         return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
+    try:
+        requested_title = normalise_title(str(payload.get("title", "")))
+    except ValueError:
+        return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
+    duplicate_action = str(payload.get("duplicateAction", ""))
+    if experiment_store.title_exists(requested_title) and duplicate_action != "suffix":
+        return JSONResponse(
+            {
+                "message": f"‘{requested_title}’과 같은 제목의 실험을 추가할 수 없습니다.",
+                "code": "duplicate-title",
+                "title": requested_title,
+                "suggestedTitle": experiment_store.unique_title(requested_title, force_suffix=True),
+            },
+            status_code=409,
+        )
+
     recording_experiments = experiment_store.recording_experiments()
     recording_action = str(payload.get("recordingAction", ""))
     if recording_experiments:
@@ -665,8 +690,8 @@ async def create_experiment(request: Request) -> JSONResponse:
                     hub.active_experiment["status"] = "stopped"
     try:
         experiment = experiment_store.create(
-            str(payload.get("title", "")),
-            ensure_unique=recording_action == "continue",
+            requested_title,
+            ensure_unique=duplicate_action == "suffix",
         )
     except (ValueError, TypeError):
         return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
@@ -676,6 +701,29 @@ async def create_experiment(request: Request) -> JSONResponse:
     await hub.broadcast(hub.snapshot())
     await hub.broadcast_recording_status()
     return JSONResponse({"experiment": hub.snapshot()["experiment"]}, status_code=201)
+
+
+@app.delete("/api/experiments/{experiment_id}")
+async def delete_experiment(experiment_id: str) -> JSONResponse:
+    try:
+        deleted = experiment_store.delete(experiment_id)
+    except (FileNotFoundError, ValueError):
+        return JSONResponse({"message": "실험을 찾을 수 없습니다."}, status_code=404)
+
+    if hub.active_experiment and hub.active_experiment.get("id") == experiment_id:
+        remaining = experiment_store.list()
+        if remaining:
+            hub.select_experiment(experiment_store.load(str(remaining[0]["id"])))
+        else:
+            hub.clear_selection()
+    await hub.broadcast(hub.snapshot())
+    await hub.broadcast_recording_status()
+    return JSONResponse(
+        {
+            "deleted": {"id": deleted["id"], "title": deleted["title"]},
+            "activeExperiment": hub.snapshot()["experiment"],
+        }
+    )
 
 
 @app.post("/api/experiments/{experiment_id}/select")

@@ -52,6 +52,11 @@ class ExperimentStore:
             suffix += 1
         return f"{base_title} ({suffix})"
 
+    def title_exists(self, title: str) -> bool:
+        """정규화한 제목과 정확히 같은 실험이 이미 있는지 확인한다."""
+        normalised = normalise_title(title)
+        return any(str(item["title"]) == normalised for item in self.list())
+
     def create(self, title: str, ensure_unique: bool = False) -> dict[str, Any]:
         now = int(time.time() * 1000)
         experiment = {
@@ -79,6 +84,14 @@ class ExperimentStore:
             encoding="utf-8",
         )
         temporary.replace(path)
+
+    def delete(self, experiment_id: str) -> dict[str, Any]:
+        """실험과 모든 원본 측정 데이터를 영구 삭제한다."""
+        experiment = self.load(experiment_id)
+        self._path(experiment_id).unlink()
+        if self.active_id == experiment_id:
+            self.active_id = None
+        return experiment
 
     def load(self, experiment_id: str) -> dict[str, Any]:
         path = self._path(experiment_id)

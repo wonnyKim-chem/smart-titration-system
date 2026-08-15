@@ -149,6 +149,9 @@ def test_health_and_static_pages() -> None:
         assert "XLSX" in dashboard_page
         assert "그래프 PNG 저장" in dashboard_page
         assert "기존 입력 유지 · 새 실험도 시작" in dashboard_page
+        assert "같은 제목의 실험이 이미 있습니다" in dashboard_page
+        assert "기존 데이터는 덮어쓰지 않습니다" in dashboard_page
+        assert 'id="toggleDeleteMode"' in dashboard_page
         assert 'value="실험 1"' in dashboard_page
         assert 'aria-label="평활화 설명"' in dashboard_page
         assert 'aria-label="동기 허용차 설명"' in dashboard_page

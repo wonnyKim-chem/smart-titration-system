@@ -27,6 +27,7 @@ const exportCsvButton = document.querySelector("#exportCsv");
 const exportXlsxButton = document.querySelector("#exportXlsx");
 const savePlotsButton = document.querySelector("#savePlots");
 const refreshExperimentsButton = document.querySelector("#refreshExperiments");
+const toggleDeleteModeButton = document.querySelector("#toggleDeleteMode");
 const experimentList = document.querySelector("#experimentList");
 const newExperimentDialog = document.querySelector("#newExperimentDialog");
 const newExperimentForm = document.querySelector("#newExperimentForm");
@@ -36,10 +37,18 @@ const recordingConflictDialog = document.querySelector("#recordingConflictDialog
 const continueAndCreateButton = document.querySelector("#continueAndCreate");
 const stopAndCreateButton = document.querySelector("#stopAndCreate");
 const cancelConflictButton = document.querySelector("#cancelConflict");
+const duplicateTitleDialog = document.querySelector("#duplicateTitleDialog");
+const duplicateTitleMessage = document.querySelector("#duplicateTitleMessage");
+const suffixTitleLabel = document.querySelector("#suffixTitleLabel");
+const addTitleSuffixButton = document.querySelector("#addTitleSuffix");
+const retryExperimentTitleButton = document.querySelector("#retryExperimentTitle");
+const cancelDuplicateTitleButton = document.querySelector("#cancelDuplicateTitle");
 
 let currentExperiment = null;
 let experiments = [];
 let pendingExperimentTitle = null;
+let pendingDuplicateRequest = null;
+let deleteMode = false;
 
 const plotConfiguration = {
   responsive: true,
@@ -287,6 +296,8 @@ function renderExperimentList() {
     return;
   }
   for (const experiment of experiments) {
+    const row = document.createElement("div");
+    row.className = "experiment-list-row";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "experiment-list-item";
@@ -299,7 +310,41 @@ function renderExperimentList() {
     detail.textContent = `${date} · ${experiment.recordCount}개 · ${experiment.status === "recording" ? "입력 중" : "중지"}`;
     button.append(title, detail);
     button.addEventListener("click", () => selectExperiment(experiment.id));
-    experimentList.append(button);
+    row.append(button);
+    if (deleteMode) {
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "experiment-delete-button";
+      deleteButton.title = `${experiment.title} 삭제`;
+      deleteButton.setAttribute("aria-label", `${experiment.title} 삭제`);
+      deleteButton.innerHTML = '<i data-lucide="trash-2"></i>';
+      deleteButton.addEventListener("click", () => deleteExperiment(experiment));
+      row.append(deleteButton);
+    }
+    experimentList.append(row);
+  }
+  globalThis.lucide?.createIcons();
+}
+
+async function deleteExperiment(experiment) {
+  const confirmed = confirm(
+    `“${experiment.title}” 실험을 삭제하시겠습니까?\n\n실험 데이터가 모두 삭제되며 이 작업은 되돌릴 수 없습니다.`,
+  );
+  if (!confirmed) return;
+  const { response, body } = await requestJson(`/api/experiments/${experiment.id}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    alert(body.message ?? "실험을 삭제하지 못했습니다.");
+    return;
+  }
+  if (currentExperiment?.id === experiment.id) {
+    updateCurrentExperiment(body.activeExperiment);
+  }
+  await loadExperiments(false);
+  if (!experiments.length) {
+    deleteMode = false;
+    toggleDeleteModeButton.classList.remove("active");
   }
 }
 
@@ -329,8 +374,8 @@ async function loadExperiments(autoSelect = true) {
   }
 }
 
-function openNewExperimentDialog() {
-  experimentTitleInput.value = "실험 1";
+function openNewExperimentDialog(initialTitle = "실험 1") {
+  experimentTitleInput.value = initialTitle;
   newExperimentDialog.showModal();
   requestAnimationFrame(() => {
     experimentTitleInput.focus();
@@ -338,12 +383,19 @@ function openNewExperimentDialog() {
   });
 }
 
-async function createExperiment(title, recordingAction = "") {
+async function createExperiment(title, recordingAction = "", duplicateAction = "") {
   const { response, body } = await requestJson("/api/experiments", {
     method: "POST",
-    body: JSON.stringify({ title, recordingAction }),
+    body: JSON.stringify({ title, recordingAction, duplicateAction }),
   });
   if (!response.ok) {
+    if (body.code === "duplicate-title") {
+      pendingDuplicateRequest = { title: body.title ?? title, recordingAction };
+      duplicateTitleMessage.textContent = `${body.message} 기존 데이터는 덮어쓰지 않습니다.`;
+      suffixTitleLabel.textContent = `“${body.suggestedTitle}”로 추가`;
+      duplicateTitleDialog.showModal();
+      return;
+    }
     alert(body.message ?? "실험을 만들지 못했습니다.");
     return;
   }
@@ -485,6 +537,12 @@ exportCsvButton.addEventListener("click", () => downloadExperimentFile("csv"));
 exportXlsxButton.addEventListener("click", () => downloadExperimentFile("xlsx"));
 savePlotsButton.addEventListener("click", saveAllPlots);
 refreshExperimentsButton.addEventListener("click", () => loadExperiments(false));
+toggleDeleteModeButton.addEventListener("click", () => {
+  deleteMode = !deleteMode;
+  toggleDeleteModeButton.classList.toggle("active", deleteMode);
+  toggleDeleteModeButton.title = deleteMode ? "삭제 모드 종료" : "실험 삭제 모드";
+  renderExperimentList();
+});
 continueAndCreateButton.addEventListener("click", async () => {
   recordingConflictDialog.close();
   const title = pendingExperimentTitle;
@@ -503,4 +561,20 @@ cancelConflictButton.addEventListener("click", () => {
 });
 document.querySelectorAll(".plot-download").forEach((button) => {
   button.addEventListener("click", () => saveSinglePlot(button.dataset.plot));
+});
+addTitleSuffixButton.addEventListener("click", async () => {
+  duplicateTitleDialog.close();
+  const request = pendingDuplicateRequest;
+  pendingDuplicateRequest = null;
+  if (request) await createExperiment(request.title, request.recordingAction, "suffix");
+});
+retryExperimentTitleButton.addEventListener("click", () => {
+  const request = pendingDuplicateRequest;
+  pendingDuplicateRequest = null;
+  duplicateTitleDialog.close();
+  openNewExperimentDialog(request?.title ?? "실험 1");
+});
+cancelDuplicateTitleButton.addEventListener("click", () => {
+  pendingDuplicateRequest = null;
+  duplicateTitleDialog.close();
 });

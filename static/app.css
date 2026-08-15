@@ -841,10 +841,21 @@ label {
   margin: 0;
 }
 
+.list-tools {
+  display: flex;
+  gap: 5px;
+}
+
 .icon-command {
   min-width: 34px;
   min-height: 34px;
   padding: 6px;
+}
+
+.icon-command.active {
+  border-color: var(--danger);
+  color: #ffffff;
+  background: var(--danger);
 }
 
 .experiment-list {
@@ -858,6 +869,12 @@ label {
   margin: 8px 0;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.experiment-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
 }
 
 .experiment-list-item {
@@ -886,6 +903,25 @@ label {
   border-color: var(--accent);
   box-shadow: inset 4px 0 0 var(--accent);
   background: #eaf5f2;
+}
+
+.experiment-delete-button {
+  min-width: 40px;
+  min-height: auto;
+  padding: 8px;
+  border-color: #dca099;
+  color: var(--danger);
+  background: #fff3f1;
+}
+
+.experiment-delete-button:hover {
+  color: #ffffff;
+  background: var(--danger);
+}
+
+.experiment-delete-button svg {
+  width: 17px;
+  height: 17px;
 }
 
 .configured-regions {
