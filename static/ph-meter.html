@@ -47,6 +47,19 @@
           <div id="selectionStatus" class="friendly-status">카메라 연결 전</div>
         </section>
 
+        <section id="recordingPanel" class="recording-panel">
+          <div>
+            <h2>실험 영상</h2>
+            <p id="recordingStatus">카메라를 연결하면 녹화할 수 있습니다.</p>
+          </div>
+          <div class="recording-actions">
+            <button id="startRecording" type="button" disabled><i data-lucide="circle"></i><span>녹화 시작</span></button>
+            <button id="stopRecording" class="secondary" type="button" disabled><i data-lucide="square"></i><span>정지</span></button>
+            <button id="downloadRecording" class="secondary" type="button" disabled><i data-lucide="download"></i><span>기기에 저장</span></button>
+            <button id="uploadRecording" class="secondary" type="button" disabled><i data-lucide="upload"></i><span>서버로 전송</span></button>
+          </div>
+        </section>
+
         <details class="advanced-settings">
           <summary>인식이 잘 안 될 때</summary>
           <div class="advanced-body control-grid">

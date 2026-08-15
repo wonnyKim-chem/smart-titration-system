@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import socket
 import ssl
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -22,6 +24,8 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 MAX_STREAM_SIZE = 20_000
 SYNC_TOLERANCE_MS = 1_500
+MAX_RECORDING_BYTES = 1_500 * 1024 * 1024
+RECORDING_NAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 Channel = Literal["burette", "ph"]
 
@@ -222,6 +226,25 @@ def analyse_streams(
     return result
 
 
+def get_recordings_directory() -> Path:
+    """사용자별 녹화 파일 저장 폴더를 반환한다."""
+    local_app_data = Path(os.getenv("LOCALAPPDATA", BASE_DIR))
+    directory = local_app_data / "SmartTitration" / "recordings"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def safe_recording_name(name: str, channel: str, content_type: str) -> str:
+    """클라이언트 파일명을 안전한 녹화 파일명으로 정규화한다."""
+    extension = ".mp4" if "mp4" in content_type.lower() else ".webm"
+    stem = Path(name).stem[:80] if name else "recording"
+    safe_stem = RECORDING_NAME_PATTERN.sub("-", stem).strip("-._") or "recording"
+    safe_channel = channel if channel in ("burette", "ph") else "camera"
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    unique_suffix = uuid.uuid4().hex[:6]
+    return f"{safe_channel}-{timestamp}-{safe_stem}-{unique_suffix}{extension}"
+
+
 hub = MeasurementHub()
 app = FastAPI(title="Smart Titration Curve Analysis System", version="1.0.0")
 
@@ -239,6 +262,74 @@ async def add_browser_security_headers(request: Request, call_next: Any) -> Any:
 @app.get("/api/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "timestamp": int(time.time() * 1000)})
+
+
+@app.post("/api/recordings")
+async def upload_recording(request: Request) -> JSONResponse:
+    """브라우저 녹화 파일을 메모리에 적재하지 않고 서버 디스크로 저장한다."""
+    content_type = request.headers.get("content-type", "video/webm").split(";", 1)[0]
+    if content_type not in ("video/webm", "video/mp4"):
+        return JSONResponse({"message": "지원하지 않는 녹화 형식입니다."}, status_code=415)
+
+    channel = request.headers.get("x-recording-channel", "camera")
+    requested_name = request.headers.get("x-recording-filename", "recording")
+    filename = safe_recording_name(requested_name, channel, content_type)
+    destination = get_recordings_directory() / filename
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    received_bytes = 0
+
+    try:
+        with temporary.open("wb") as output:
+            async for chunk in request.stream():
+                received_bytes += len(chunk)
+                if received_bytes > MAX_RECORDING_BYTES:
+                    raise ValueError("녹화 파일은 1.5 GB를 초과할 수 없습니다.")
+                output.write(chunk)
+        if received_bytes == 0:
+            raise ValueError("빈 녹화 파일은 저장할 수 없습니다.")
+        temporary.replace(destination)
+    except ValueError as error:
+        temporary.unlink(missing_ok=True)
+        return JSONResponse({"message": str(error)}, status_code=413)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return JSONResponse({"message": "녹화 파일을 저장하지 못했습니다."}, status_code=500)
+
+    return JSONResponse(
+        {
+            "filename": filename,
+            "size": received_bytes,
+            "downloadUrl": f"/api/recordings/{filename}",
+        },
+        status_code=201,
+    )
+
+
+@app.get("/api/recordings")
+async def list_recordings() -> JSONResponse:
+    recordings = [
+        {
+            "filename": path.name,
+            "size": path.stat().st_size,
+            "modifiedAt": int(path.stat().st_mtime * 1000),
+            "downloadUrl": f"/api/recordings/{path.name}",
+        }
+        for path in get_recordings_directory().iterdir()
+        if path.is_file() and path.suffix.lower() in (".webm", ".mp4")
+    ]
+    recordings.sort(key=lambda item: item["modifiedAt"], reverse=True)
+    return JSONResponse({"recordings": recordings})
+
+
+@app.get("/api/recordings/{filename}")
+async def download_recording(filename: str) -> Any:
+    if Path(filename).name != filename:
+        return JSONResponse({"message": "잘못된 파일명입니다."}, status_code=400)
+    path = get_recordings_directory() / filename
+    if not path.is_file() or path.suffix.lower() not in (".webm", ".mp4"):
+        return JSONResponse({"message": "녹화 파일을 찾을 수 없습니다."}, status_code=404)
+    media_type = "video/mp4" if path.suffix.lower() == ".mp4" else "video/webm"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @app.get("/")

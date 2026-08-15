@@ -33,7 +33,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from main import app, get_default_certificate_paths, get_local_ip, hub, resolve_tls_configuration
+from main import (
+    app,
+    get_default_certificate_paths,
+    get_local_ip,
+    get_recordings_directory,
+    hub,
+    resolve_tls_configuration,
+)
 
 
 APP_NAME = "Smart Titration"
@@ -315,8 +322,11 @@ class MainWindow(QMainWindow):
         self.stop_button = QPushButton("서버 중지")
         self.stop_button.clicked.connect(self._stop_server)
         self.stop_button.setEnabled(False)
+        self.recordings_button = QPushButton("녹화 폴더")
+        self.recordings_button.clicked.connect(self._open_recordings_folder)
         server_actions.addWidget(self.start_button)
         server_actions.addWidget(self.stop_button)
+        server_actions.addWidget(self.recordings_button)
         server_layout.addWidget(server_title)
         server_layout.addLayout(server_actions)
         operation_column.addWidget(server_panel)
@@ -576,6 +586,9 @@ class MainWindow(QMainWindow):
         certificate, _ = get_default_certificate_paths()
         certificate.parent.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(certificate.parent)))
+
+    def _open_recordings_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_recordings_directory())))
 
     def _copy_url(self) -> None:
         QApplication.clipboard().setText(self.access_url)

@@ -1,5 +1,6 @@
 import { createMeasurementId } from "./offline-store.js";
 import { ReliableMeasurementSocket } from "./reliable-socket.js";
+import { createCameraRecorder } from "./camera-recorder.js";
 import {
   assertCameraSupport,
   describeCameraError,
@@ -40,7 +41,10 @@ let animationFrame = null;
 let lastMeasurementAt = 0;
 let lastProcessedAt = 0;
 let displayRegion = JSON.parse(localStorage.getItem("titration-ph-display-region") ?? "null");
+let trackingFrameCount = 0;
+let failedReadingFrames = 0;
 const recentReadings = [];
+const recorder = createCameraRecorder("ph");
 
 const socket = new ReliableMeasurementSocket("ph", (connected) => {
   networkStatus.textContent = connected ? "서버 연결됨" : "오프라인 저장";
@@ -57,28 +61,38 @@ function getRoi(frame) {
   return new cv.Rect(x, y, width, height);
 }
 
-function setDisplayRegion(rectangle, frame) {
-  displayRegion = {
+function setDisplayRegion(rectangle, frame, resetReadings = true) {
+  const nextRegion = {
     x: rectangle.x / frame.cols,
     y: rectangle.y / frame.rows,
     width: rectangle.width / frame.cols,
     height: rectangle.height / frame.rows,
   };
+  displayRegion = resetReadings || !displayRegion
+    ? nextRegion
+    : {
+        x: displayRegion.x * 0.7 + nextRegion.x * 0.3,
+        y: displayRegion.y * 0.7 + nextRegion.y * 0.3,
+        width: displayRegion.width * 0.7 + nextRegion.width * 0.3,
+        height: displayRegion.height * 0.7 + nextRegion.height * 0.3,
+      };
   localStorage.setItem("titration-ph-display-region", JSON.stringify(displayRegion));
-  recentReadings.length = 0;
+  if (resetReadings) recentReadings.length = 0;
   resetDisplayButton.disabled = false;
-  selectionStatus.textContent = "LCD 영역을 찾았습니다. 숫자를 읽는 중입니다.";
+  if (resetReadings) selectionStatus.textContent = "LCD 영역을 찾았습니다. 숫자를 읽는 중입니다.";
 }
 
-function findDisplayAroundPoint(frame, pointX, pointY) {
+function findDisplayAroundPoint(frame, pointX, pointY, allowFallback = true) {
   const gray = new cv.Mat();
+  const equalized = new cv.Mat();
   const blurred = new cv.Mat();
   const edges = new cv.Mat();
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gray, blurred, new cv.Size(7, 7), 0);
-  cv.Canny(blurred, edges, 35, 110);
+  cv.equalizeHist(gray, equalized);
+  cv.GaussianBlur(equalized, blurred, new cv.Size(7, 7), 0);
+  cv.Canny(blurred, edges, 30, 100);
   cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
 
   let selected = null;
@@ -103,6 +117,7 @@ function findDisplayAroundPoint(frame, pointX, pointY) {
   }
 
   gray.delete();
+  equalized.delete();
   blurred.delete();
   edges.delete();
   contours.delete();
@@ -119,6 +134,8 @@ function findDisplayAroundPoint(frame, pointX, pointY) {
     );
   }
 
+  if (!allowFallback) return null;
+
   const fallbackWidth = Math.round(frame.cols * 0.58);
   const fallbackHeight = Math.round(frame.rows * 0.3);
   return new cv.Rect(
@@ -127,6 +144,52 @@ function findDisplayAroundPoint(frame, pointX, pointY) {
     fallbackWidth,
     fallbackHeight,
   );
+}
+
+function trackDisplayRegion(frame, force = false) {
+  if (!displayRegion) return false;
+  trackingFrameCount += 1;
+  if (!force && trackingFrameCount % 15 !== 0) return true;
+  const current = getRoi(frame);
+  if (!current) return false;
+  const centerX = current.x + current.width / 2;
+  const centerY = current.y + current.height / 2;
+  const candidate = findDisplayAroundPoint(frame, centerX, centerY, false);
+  if (!candidate) return false;
+
+  const candidateCenterX = candidate.x + candidate.width / 2;
+  const candidateCenterY = candidate.y + candidate.height / 2;
+  const distance = Math.hypot(candidateCenterX - centerX, candidateCenterY - centerY);
+  const sizeRatio = candidate.width / Math.max(current.width, 1);
+  if (distance > Math.max(current.width, current.height) * 1.4 || sizeRatio < 0.55 || sizeRatio > 1.8) {
+    return false;
+  }
+  setDisplayRegion(candidate, frame, false);
+  return true;
+}
+
+function inspectImageQuality(gray) {
+  const mean = new cv.Mat();
+  const standardDeviation = new cv.Mat();
+  const laplacian = new cv.Mat();
+  const laplacianMean = new cv.Mat();
+  const laplacianDeviation = new cv.Mat();
+  cv.meanStdDev(gray, mean, standardDeviation);
+  cv.Laplacian(gray, laplacian, cv.CV_64F);
+  cv.meanStdDev(laplacian, laplacianMean, laplacianDeviation);
+  const brightness = mean.data64F[0];
+  const contrast = standardDeviation.data64F[0];
+  const sharpness = laplacianDeviation.data64F[0] ** 2;
+  mean.delete();
+  standardDeviation.delete();
+  laplacian.delete();
+  laplacianMean.delete();
+  laplacianDeviation.delete();
+  return {
+    usable: brightness >= 22 && brightness <= 238 && contrast >= 10 && sharpness >= 14,
+    brightness,
+    sharpness,
+  };
 }
 
 function segmentOccupancy(binary, rectangle) {
@@ -195,14 +258,23 @@ function readDisplay(binary) {
 }
 
 function stabiliseReading(value) {
-  if (value === null) return null;
+  if (value === null) {
+    failedReadingFrames += 1;
+    if (failedReadingFrames >= 8) recentReadings.length = 0;
+    return null;
+  }
   recentReadings.push(value);
   if (recentReadings.length > 5) recentReadings.shift();
   if (recentReadings.length < 3) return null;
   const sorted = [...recentReadings].sort((left, right) => left - right);
   const median = sorted[Math.floor(sorted.length / 2)];
   const closeReadings = sorted.filter((item) => Math.abs(item - median) <= 0.03);
-  return closeReadings.length >= 3 ? median : null;
+  if (closeReadings.length < 3) {
+    failedReadingFrames += 1;
+    return null;
+  }
+  failedReadingFrames = 0;
+  return median;
 }
 
 async function recordPh(value, timestamp) {
@@ -213,14 +285,42 @@ async function recordPh(value, timestamp) {
   });
 }
 
+function ensureFrameDimensions() {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return false;
+  video.width = width;
+  video.height = height;
+  if (sourceFrame && sourceFrame.cols === width && sourceFrame.rows === height) return true;
+  sourceFrame?.delete();
+  sourceFrame = new cv.Mat(height, width, cv.CV_8UC4);
+  canvas.width = width;
+  canvas.height = height;
+  return true;
+}
+
 function processFrame(timestamp) {
   if (!cameraCapture || !sourceFrame) return;
-  if (timestamp - lastProcessedAt < 66) {
+  if (timestamp - lastProcessedAt < 100) {
     animationFrame = requestAnimationFrame(processFrame);
     return;
   }
   lastProcessedAt = timestamp;
-  cameraCapture.read(sourceFrame);
+  if (!ensureFrameDimensions()) {
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
+  try {
+    cameraCapture.read(sourceFrame);
+  } catch {
+    sourceFrame?.delete();
+    sourceFrame = null;
+    selectionStatus.textContent = "카메라 영상을 다시 연결하는 중입니다.";
+    ensureFrameDimensions();
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
+  trackDisplayRegion(sourceFrame, failedReadingFrames >= 10);
   const displayFrame = sourceFrame.clone();
   const roiRectangle = getRoi(sourceFrame);
   if (roiRectangle) {
@@ -231,6 +331,7 @@ function processFrame(timestamp) {
     const lightBinary = new cv.Mat();
     const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
     cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
+    const imageQuality = inspectImageQuality(gray);
     cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
     cv.threshold(blurred, darkBinary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
     cv.threshold(blurred, lightBinary, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
@@ -240,7 +341,8 @@ function processFrame(timestamp) {
     const darkReading = readDisplay(darkBinary);
     const lightReading = readDisplay(lightBinary);
     const reading = darkReading.confidence >= lightReading.confidence ? darkReading : lightReading;
-    const stableValue = stabiliseReading(reading.value);
+    const acceptedValue = imageQuality.usable && reading.confidence >= 0.68 ? reading.value : null;
+    const stableValue = stabiliseReading(acceptedValue);
 
     cv.rectangle(
       displayFrame,
@@ -256,6 +358,16 @@ function processFrame(timestamp) {
         lastMeasurementAt = timestamp;
         recordPh(stableValue, Date.now());
       }
+    } else if (!imageQuality.usable) {
+      selectionStatus.textContent = imageQuality.brightness < 22
+        ? "화면이 너무 어둡습니다. LCD에 빛이 닿도록 조정해주세요."
+        : imageQuality.brightness > 238
+          ? "화면이 너무 밝습니다. 반사광을 피해 각도를 조정해주세요."
+          : "화면이 흔들리거나 흐립니다. 잠시 고정하면 자동으로 다시 측정합니다.";
+    } else if (failedReadingFrames >= 10) {
+      selectionStatus.textContent = "LCD 위치를 다시 찾는 중입니다. 숫자 화면을 카메라 안에 유지해주세요.";
+    } else {
+      selectionStatus.textContent = "숫자를 확인하는 중입니다. 잠시 고정해주세요.";
     }
 
     roi.delete();
@@ -283,10 +395,9 @@ async function startCamera() {
   try {
     assertCameraSupport();
     await waitForOpenCv(visionStatus);
-    await startEnvironmentCamera(video);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+    const stream = await startEnvironmentCamera(video);
+    recorder.attachStream(stream);
+    ensureFrameDimensions();
     cameraCapture = new cv.VideoCapture(video);
     startButton.querySelector("span").textContent = "카메라 실행 중";
     selectionStatus.textContent = displayRegion ? "저장된 LCD 영역을 확인하는 중입니다." : "카메라 화면에서 LCD 숫자를 터치하세요.";
@@ -312,6 +423,7 @@ resetDisplayButton.addEventListener("click", () => {
   displayRegion = null;
   localStorage.removeItem("titration-ph-display-region");
   recentReadings.length = 0;
+  failedReadingFrames = 0;
   livePh.textContent = "pH --.--";
   selectionStatus.textContent = "카메라 화면에서 LCD 숫자를 터치하세요.";
   setCameraMessage(cameraMessage, "LCD 숫자 화면의 중앙을 한 번 터치하세요.");
@@ -321,6 +433,7 @@ window.addEventListener("beforeunload", () => {
   sourceFrame?.delete();
   video.srcObject?.getTracks().forEach((track) => track.stop());
   socket.stop();
+  recorder.dispose();
 });
 
 waitForOpenCv(visionStatus).catch(() => {

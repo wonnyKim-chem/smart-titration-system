@@ -1,5 +1,6 @@
 import { createMeasurementId } from "./offline-store.js";
 import { ReliableMeasurementSocket } from "./reliable-socket.js";
+import { createCameraRecorder } from "./camera-recorder.js";
 import {
   assertCameraSupport,
   describeCameraError,
@@ -56,8 +57,17 @@ let lastProcessedAt = 0;
 let calibrationStage = calibration.scale ? "complete" : "waiting-first";
 let tutorialOpen = false;
 let calibrationDialogOpen = false;
+let referenceTemplate = null;
+let referenceTemplateOrigin = null;
+let latestRectifiedFrame = null;
+let motionOffsetY = 0;
+let motionConfidence = 1;
+let motionFrameCount = 0;
+let rejectedMeniscusFrames = 0;
 const stableMeniscusPoints = [];
+const filteredMeniscusPoints = [];
 const orientation = { beta: 0, gamma: 0 };
+const recorder = createCameraRecorder("burette");
 
 const socket = new ReliableMeasurementSocket("burette", (connected) => {
   networkStatus.textContent = connected ? "서버 연결됨" : "오프라인 저장";
@@ -95,10 +105,114 @@ function resetCalibration() {
   });
   calibrationStage = "waiting-first";
   stableMeniscusPoints.length = 0;
+  filteredMeniscusPoints.length = 0;
+  referenceTemplate?.delete();
+  referenceTemplate = null;
+  referenceTemplateOrigin = null;
+  motionOffsetY = 0;
+  motionConfidence = 1;
   currentVolume = null;
   liveVolume.textContent = "--.-- mL";
   calibrationStatus.textContent = "메니스커스를 찾는 중입니다. 뷰렛을 움직이지 마세요.";
   saveCalibration();
+}
+
+function createTrackingGray(frame) {
+  const gray = new cv.Mat();
+  const equalized = new cv.Mat();
+  const blurred = new cv.Mat();
+  const edges = new cv.Mat();
+  cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
+  cv.equalizeHist(gray, equalized);
+  cv.GaussianBlur(equalized, blurred, new cv.Size(3, 3), 0);
+  cv.Canny(blurred, edges, 35, 110);
+  gray.delete();
+  equalized.delete();
+  blurred.delete();
+  return edges;
+}
+
+function captureMotionReference(frame) {
+  referenceTemplate?.delete();
+  const gray = createTrackingGray(frame);
+  const rectangle = new cv.Rect(
+    Math.round(frame.cols * 0.1),
+    Math.round(frame.rows * 0.28),
+    Math.round(frame.cols * 0.8),
+    Math.round(frame.rows * 0.42),
+  );
+  referenceTemplate = gray.roi(rectangle).clone();
+  referenceTemplateOrigin = { x: rectangle.x, y: rectangle.y };
+  motionOffsetY = 0;
+  motionConfidence = 1;
+  gray.delete();
+}
+
+function estimateCameraMotion(frame) {
+  if (!referenceTemplate || !referenceTemplateOrigin) {
+    return { offsetY: 0, confidence: 1 };
+  }
+  motionFrameCount += 1;
+  if (motionFrameCount % 3 !== 0) {
+    return { offsetY: motionOffsetY, confidence: motionConfidence };
+  }
+
+  const gray = createTrackingGray(frame);
+  const horizontalMargin = Math.round(frame.cols * 0.08);
+  const verticalMargin = Math.round(frame.rows * 0.14);
+  const expectedX = referenceTemplateOrigin.x;
+  const expectedY = referenceTemplateOrigin.y + motionOffsetY;
+  const searchX = Math.max(0, expectedX - horizontalMargin);
+  const searchY = Math.max(0, Math.round(expectedY - verticalMargin));
+  const searchWidth = Math.min(
+    frame.cols - searchX,
+    referenceTemplate.cols + horizontalMargin * 2,
+  );
+  const searchHeight = Math.min(
+    frame.rows - searchY,
+    referenceTemplate.rows + verticalMargin * 2,
+  );
+  if (searchWidth < referenceTemplate.cols || searchHeight < referenceTemplate.rows) {
+    gray.delete();
+    motionConfidence = 0;
+    return { offsetY: motionOffsetY, confidence: 0 };
+  }
+
+  const search = gray.roi(new cv.Rect(searchX, searchY, searchWidth, searchHeight));
+  const result = new cv.Mat();
+  cv.matchTemplate(search, referenceTemplate, result, cv.TM_CCOEFF_NORMED);
+  const match = cv.minMaxLoc(result);
+  const measuredOffsetY = searchY + match.maxLoc.y - referenceTemplateOrigin.y;
+  if (match.maxVal >= 0.48 && Math.abs(measuredOffsetY - motionOffsetY) <= verticalMargin) {
+    motionOffsetY = motionOffsetY * 0.65 + measuredOffsetY * 0.35;
+  }
+  motionConfidence = match.maxVal;
+  gray.delete();
+  search.delete();
+  result.delete();
+  return { offsetY: motionOffsetY, confidence: motionConfidence };
+}
+
+function filterMeniscusPosition(rawY, detectionConfidence, movement) {
+  if (rawY === null || detectionConfidence < 0.48 || movement.confidence < 0.48) {
+    rejectedMeniscusFrames += 1;
+    if (rejectedMeniscusFrames >= 8) filteredMeniscusPoints.length = 0;
+    return null;
+  }
+  const correctedY = rawY - movement.offsetY;
+  if (filteredMeniscusPoints.length) {
+    const sorted = [...filteredMeniscusPoints].sort((left, right) => left - right);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (Math.abs(correctedY - median) > 24 && rejectedMeniscusFrames < 3) {
+      rejectedMeniscusFrames += 1;
+      return null;
+    }
+  }
+  rejectedMeniscusFrames = 0;
+  filteredMeniscusPoints.push(correctedY);
+  if (filteredMeniscusPoints.length > 5) filteredMeniscusPoints.shift();
+  const sorted = [...filteredMeniscusPoints].sort((left, right) => left - right);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 function trackStableMeniscus(yPosition) {
@@ -255,20 +369,24 @@ function rectifyFrame(source) {
 function detectMeniscus(frame) {
   const gray = new cv.Mat();
   const filtered = new cv.Mat();
+  const equalized = new cv.Mat();
   const binary = new cv.Mat();
   cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
   cv.GaussianBlur(gray, filtered, new cv.Size(5, 5), 0);
+  cv.equalizeHist(filtered, equalized);
   const threshold = Number(thresholdInput.value);
   if (modeInput.value === "canny") {
-    cv.Canny(filtered, binary, threshold * 0.5, threshold * 1.5);
+    const sensitivity = threshold / 90;
+    cv.Canny(equalized, binary, 38 * sensitivity, 115 * sensitivity);
   } else {
-    cv.threshold(filtered, binary, threshold, 255, cv.THRESH_BINARY_INV);
+    cv.threshold(equalized, binary, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU);
   }
 
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   cv.findContours(binary, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_NONE);
   let bestContour = null;
+  let bestBounds = null;
   let bestScore = -Infinity;
   const horizontalCenter = frame.cols / 2;
 
@@ -285,12 +403,14 @@ function detectMeniscus(frame) {
     if (isMeniscusShape && score > bestScore) {
       bestContour?.delete();
       bestContour = contour.clone();
+      bestBounds = bounds;
       bestScore = score;
     }
     contour.delete();
   }
 
   let minimumY = null;
+  let confidence = 0;
   if (bestContour) {
     minimumY = Infinity;
     for (let index = 0; index < bestContour.data32S.length; index += 2) {
@@ -303,15 +423,20 @@ function detectMeniscus(frame) {
       new cv.Scalar(241, 200, 74, 255),
       3,
     );
+    const widthScore = Math.min(1, bestBounds.width / (frame.cols * 0.45));
+    const centerDistance = Math.abs(bestBounds.x + bestBounds.width / 2 - horizontalCenter);
+    const centerScore = Math.max(0, 1 - centerDistance / (frame.cols * 0.5));
+    confidence = widthScore * 0.65 + centerScore * 0.35;
     bestContour.delete();
   }
 
   gray.delete();
   filtered.delete();
+  equalized.delete();
   binary.delete();
   contours.delete();
   hierarchy.delete();
-  return minimumY;
+  return { y: minimumY, confidence };
 }
 
 async function recordVolume(timestamp) {
@@ -324,16 +449,48 @@ async function recordVolume(timestamp) {
   await socket.storeAndSend(measurement);
 }
 
+function ensureFrameDimensions() {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) return false;
+  video.width = width;
+  video.height = height;
+  if (sourceFrame && sourceFrame.cols === width && sourceFrame.rows === height) return true;
+  sourceFrame?.delete();
+  sourceFrame = new cv.Mat(height, width, cv.CV_8UC4);
+  canvas.width = width;
+  canvas.height = height;
+  resetCalibration();
+  return true;
+}
+
 function processFrame(timestamp) {
   if (!cameraCapture || !sourceFrame) return;
-  if (timestamp - lastProcessedAt < 66) {
+  if (timestamp - lastProcessedAt < 100) {
     animationFrame = requestAnimationFrame(processFrame);
     return;
   }
   lastProcessedAt = timestamp;
-  cameraCapture.read(sourceFrame);
+  if (!ensureFrameDimensions()) {
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
+  try {
+    cameraCapture.read(sourceFrame);
+  } catch {
+    sourceFrame?.delete();
+    sourceFrame = null;
+    calibrationStatus.textContent = "카메라 영상을 다시 연결하는 중입니다.";
+    ensureFrameDimensions();
+    animationFrame = requestAnimationFrame(processFrame);
+    return;
+  }
   const rectified = rectifyFrame(sourceFrame);
-  currentY = detectMeniscus(rectified);
+  latestRectifiedFrame?.delete();
+  latestRectifiedFrame = rectified.clone();
+  const detection = detectMeniscus(rectified);
+  const movement = estimateCameraMotion(rectified);
+  currentY = filterMeniscusPosition(detection.y, detection.confidence, movement);
   const isStable = trackStableMeniscus(currentY);
 
   if (currentY !== null) {
@@ -354,7 +511,9 @@ function processFrame(timestamp) {
     }
     updateCalibrationTutorial(isStable);
   } else if (!tutorialOpen) {
-    calibrationStatus.textContent = "액체 표면을 찾지 못했습니다. 눈금과 메니스커스가 선명하게 보이도록 맞춰주세요.";
+    calibrationStatus.textContent = movement.confidence < 0.48 && referenceTemplate
+      ? "카메라 위치가 크게 바뀌었습니다. 눈금이 다시 보이도록 천천히 맞추면 측정을 재개합니다."
+      : "측정 품질을 확인하는 중입니다. 눈금과 메니스커스가 선명하게 보이도록 잠시 고정해주세요.";
   }
 
   cv.imshow(canvas, rectified);
@@ -370,11 +529,11 @@ async function startCamera() {
   try {
     assertCameraSupport();
     await Promise.all([waitForOpenCv(visionStatus), enableOrientation()]);
-    await startEnvironmentCamera(video);
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    sourceFrame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+    const stream = await startEnvironmentCamera(video);
+    recorder.attachStream(stream);
+    ensureFrameDimensions();
     cameraCapture = new cv.VideoCapture(video);
+    resetCalibration();
     startButton.querySelector("span").textContent = "카메라 실행 중";
     restartCalibrationButton.disabled = false;
     tutorialOpen = true;
@@ -411,6 +570,7 @@ calibrationForm.addEventListener("submit", (event) => {
   if (calibrationStage === "waiting-first") {
     calibration.point1Y = currentY;
     calibration.point1Volume = actualVolume;
+    if (latestRectifiedFrame) captureMotionReference(latestRectifiedFrame);
     calibrationStage = "waiting-second";
     calibrationStatus.textContent = "콕을 열어 액체를 3~5 mL 정도 배출한 뒤 다시 잠가주세요.";
   } else if (calibrationStage === "waiting-second") {
@@ -446,8 +606,11 @@ completionConfirm.addEventListener("click", () => {
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);
   sourceFrame?.delete();
+  latestRectifiedFrame?.delete();
+  referenceTemplate?.delete();
   video.srcObject?.getTracks().forEach((track) => track.stop());
   socket.stop();
+  recorder.dispose();
 });
 
 saveCalibration();

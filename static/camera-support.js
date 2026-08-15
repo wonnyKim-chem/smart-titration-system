@@ -84,9 +84,9 @@ export async function startEnvironmentCamera(video) {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: { ideal: "environment" },
-      width: { ideal: 960 },
-      height: { ideal: 540 },
-      frameRate: { ideal: 15, max: 24 },
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 15, max: 20 },
     },
     audio: false,
   });

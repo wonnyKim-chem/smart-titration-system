@@ -346,6 +346,50 @@ h2 {
   line-height: 1.55;
 }
 
+.recording-panel {
+  display: grid;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  gap: 12px;
+}
+
+.recording-panel h2 {
+  margin-bottom: 4px;
+  font-size: 0.94rem;
+}
+
+.recording-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.recording-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.recording-actions button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 9px;
+  font-size: 0.78rem;
+}
+
+.recording-active {
+  border-color: var(--danger);
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+
+.recording-active p {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .advanced-settings {
   border: 1px solid var(--line);
   background: var(--surface);
