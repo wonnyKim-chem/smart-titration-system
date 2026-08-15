@@ -2,10 +2,30 @@ import socket
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
-from launcher import MainWindow, is_port_available
+from launcher import (
+    MainWindow,
+    is_port_available,
+    load_auto_renew_setting,
+    save_auto_renew_setting,
+)
+
+
+def test_auto_renew_setting_defaults_to_off_and_persists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert not load_auto_renew_setting()
+
+    save_auto_renew_setting(True)
+    assert load_auto_renew_setting()
+
+    save_auto_renew_setting(False)
+    assert not load_auto_renew_setting()
 
 
 def test_port_availability_detects_listener() -> None:
@@ -37,6 +57,7 @@ def test_first_run_does_not_install_certificate_automatically(
     assert window.server_thread is None
     assert window.server_status.text() == "HTTPS 필수 설정 미완료"
     assert window.setup_certificate_button.text() == "HTTPS 필수 설정"
+    assert not window.auto_renew_toggle.isChecked()
     required_notice = window.findChild(QLabel, "requiredNotice")
     assert required_notice is not None
     assert "모바일 브라우저 카메라" in required_notice.text()
@@ -68,3 +89,23 @@ def test_port_conflict_shows_readable_message(monkeypatch: pytest.MonkeyPatch) -
         window.tray.hide()
         window.close()
         application.processEvents()
+
+
+def test_close_can_hide_window_in_tray(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow(auto_start=False)
+    window.show()
+    monkeypatch.setattr(window, "_prompt_close_action", lambda: "tray")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert window.isHidden()
+    window.quitting = True
+    window.tray.hide()
+    window.close()
+    application.processEvents()

@@ -99,8 +99,9 @@ def ensure_short_lived_server_certificate(
     ip_address: str,
     certificate_path: Path,
     private_key_path: Path,
+    renew_before_hours: float = RENEW_BEFORE_HOURS,
 ) -> tuple[bool, datetime | None]:
-    """인증서가 장기 인증서이거나 2시간 이내 만료되면 자동 재발급한다."""
+    """인증서가 장기·만료·IP 불일치이거나 설정된 사전 갱신 시점이면 재발급한다."""
     ca_certificate_path, ca_key_path = get_local_ca_paths()
     if not ca_certificate_path.is_file() or not ca_key_path.is_file():
         return False, None
@@ -117,7 +118,7 @@ def ensure_short_lived_server_certificate(
             ip_names = {str(value) for value in names.get_values_for_type(x509.IPAddress)}
             should_issue = (
                 lifetime > timedelta(hours=SERVER_CERTIFICATE_HOURS + 1)
-                or remaining <= timedelta(hours=RENEW_BEFORE_HOURS)
+                or remaining <= timedelta(hours=max(0, renew_before_hours))
                 or ip_address not in ip_names
             )
         except (OSError, ValueError, x509.ExtensionNotFound):

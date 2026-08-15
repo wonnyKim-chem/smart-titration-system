@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -17,6 +18,7 @@ from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QFont,
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -60,6 +62,28 @@ from wifi_share import (
 APP_NAME = "Smart Titration"
 DEFAULT_PORT = 8000
 INSTANCE_SERVER_NAME = "SmartTitrationServerLauncher"
+
+
+def get_launcher_settings_path() -> Path:
+    directory = Path(os.getenv("LOCALAPPDATA", Path.home())) / "SmartTitration"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "settings.json"
+
+
+def load_auto_renew_setting() -> bool:
+    try:
+        settings = json.loads(get_launcher_settings_path().read_text(encoding="utf-8"))
+        return bool(settings.get("autoRenewCertificate", False))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def save_auto_renew_setting(enabled: bool) -> None:
+    path = get_launcher_settings_path()
+    path.write_text(
+        json.dumps({"autoRenewCertificate": enabled}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def resource_path(filename: str) -> Path:
@@ -223,6 +247,7 @@ class MainWindow(QMainWindow):
         self.access_url = f"https://{self.ip_address}:{self.port}"
         self.server_thread: ServerThread | None = None
         self.certificate_process: QProcess | None = None
+        self.auto_renew_certificate = load_auto_renew_setting()
         self.was_server_running = False
         self.restart_after_certificate_renewal = False
         self.quitting = False
@@ -241,7 +266,8 @@ class MainWindow(QMainWindow):
         self.certificate_timer = QTimer(self)
         self.certificate_timer.setInterval(30 * 60 * 1000)
         self.certificate_timer.timeout.connect(self._maintain_short_lived_certificate)
-        self.certificate_timer.start()
+        if self.auto_renew_certificate:
+            self.certificate_timer.start()
         self._refresh_certificate_state()
         if auto_start:
             QTimer.singleShot(250, self._auto_start_server)
@@ -320,6 +346,11 @@ class MainWindow(QMainWindow):
         self.certificate_detail = QLabel("")
         self.certificate_detail.setWordWrap(True)
         self.certificate_detail.setObjectName("mutedText")
+        self.auto_renew_status = QLabel("")
+        self.auto_renew_status.setObjectName("mutedText")
+        self.auto_renew_toggle = QCheckBox("만료 2시간 전 자동 갱신 및 서버 재시작")
+        self.auto_renew_toggle.setChecked(self.auto_renew_certificate)
+        self.auto_renew_toggle.toggled.connect(self._set_auto_renew_certificate)
         certificate_reason = QLabel(
             "서버 시작과 모바일 브라우저 카메라 사용에는 신뢰된 HTTPS가 필수입니다. "
             "카메라를 사용할 iPhone·Android에도 로컬 CA 인증서를 설치하고 신뢰해야 합니다."
@@ -337,6 +368,8 @@ class MainWindow(QMainWindow):
         certificate_layout.addWidget(certificate_title)
         certificate_layout.addWidget(self.certificate_status)
         certificate_layout.addWidget(self.certificate_detail)
+        certificate_layout.addWidget(self.auto_renew_status)
+        certificate_layout.addWidget(self.auto_renew_toggle)
         certificate_layout.addWidget(certificate_reason)
         certificate_layout.addLayout(certificate_actions)
         operation_column.addWidget(certificate_panel)
@@ -495,7 +528,10 @@ class MainWindow(QMainWindow):
             certificate, private_key = get_default_certificate_paths()
             try:
                 renewed, expires_at = ensure_short_lived_server_certificate(
-                    self.ip_address, certificate, private_key
+                    self.ip_address,
+                    certificate,
+                    private_key,
+                    renew_before_hours=2 if self.auto_renew_certificate else 0,
                 )
                 if renewed and expires_at:
                     self._append_log(
@@ -507,6 +543,11 @@ class MainWindow(QMainWindow):
         self.certificate_status.setText("필수 설정 완료" if valid else "필수 설정 미완료")
         self.certificate_status.setStyleSheet("color: #087f6d;" if valid else "color: #c44235;")
         self.certificate_detail.setText(detail)
+        self.auto_renew_status.setText(
+            "실행 중 만료 2시간 전 자동 갱신: 켜짐"
+            if self.auto_renew_certificate
+            else "실행 중 만료 2시간 전 자동 갱신: 꺼짐 (기본값)"
+        )
         self.start_button.setEnabled(valid and not self._server_is_running())
         return valid
 
@@ -569,10 +610,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(300, self._start_server)
 
     def _maintain_short_lived_certificate(self) -> None:
+        if not self.auto_renew_certificate:
+            return
         certificate, private_key = get_default_certificate_paths()
         try:
             renewed, expires_at = ensure_short_lived_server_certificate(
-                self.ip_address, certificate, private_key
+                self.ip_address, certificate, private_key, renew_before_hours=2
             )
         except RuntimeError as error:
             self._append_log(f"24시간 인증서 자동 갱신 실패: {error}")
@@ -587,6 +630,23 @@ class MainWindow(QMainWindow):
             self._stop_server()
         else:
             self._refresh_certificate_state()
+
+    def _set_auto_renew_certificate(self, enabled: bool) -> None:
+        self.auto_renew_certificate = enabled
+        save_auto_renew_setting(enabled)
+        if self.auto_renew_toggle.isChecked() != enabled:
+            self.auto_renew_toggle.blockSignals(True)
+            self.auto_renew_toggle.setChecked(enabled)
+            self.auto_renew_toggle.blockSignals(False)
+        if enabled:
+            self.certificate_timer.start()
+        else:
+            self.certificate_timer.stop()
+        self.auto_renew_status.setText(
+            "실행 중 만료 2시간 전 자동 갱신: 켜짐"
+            if enabled
+            else "실행 중 만료 2시간 전 자동 갱신: 꺼짐 (기본값)"
+        )
 
     def _refresh_runtime_state(self) -> None:
         running = self._server_is_running()
@@ -614,23 +674,55 @@ class MainWindow(QMainWindow):
     def _setup_certificate(self) -> None:
         if self.certificate_process and self.certificate_process.state() != QProcess.ProcessState.NotRunning:
             return
-        confirmation = QMessageBox.question(
-            self,
-            "HTTPS 필수 설정",
-            "Smart Titration 서버와 모바일 브라우저 카메라는 신뢰된 HTTPS 연결에서만 작동합니다. "
-            "따라서 이 설정은 서버 시작에 필수입니다.\n\n"
-            "설정을 시작하면 이 PC에 Smart Titration 전용 로컬 인증기관을 설치하고, 현재 IP용 "
-            "HTTPS 서버 인증서를 만듭니다. Windows가 인증기관 설치 확인 창을 표시할 수 있습니다.\n\n"
+        dialog = QDialog(self)
+        dialog.setWindowTitle("HTTPS 필수 설정")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 24)
+        title = QLabel("서버와 모바일 카메라에 필요한 HTTPS 설정")
+        title.setObjectName("sectionTitle")
+        description = QLabel(
+            "Smart Titration 서버와 모바일 브라우저 카메라는 신뢰된 HTTPS 연결에서만 작동하므로 "
+            "이 설정은 서버 시작에 필수입니다.\n\n"
+            "이 PC에 Smart Titration 전용 로컬 인증기관을 설치하고 현재 IP용 HTTPS 서버 인증서를 만듭니다. "
+            "Windows가 인증기관 설치 확인 창을 표시할 수 있습니다.\n\n"
             "카메라를 사용할 iPhone·Android에도 SmartTitration-RootCA.crt를 한 번 설치하고 신뢰해야 합니다. "
-            "이 인증서는 카메라 접근 권한이나 외부 전송 권한을 주는 것이 아니라, 이 PC와 모바일 사이의 "
-            "로컬 HTTPS 연결을 암호화하고 서버 신원을 확인하는 용도입니다.\n\n"
-            "실제 서버 인증서는 24시간만 유효하고 앱이 만료 전에 자동 갱신합니다. 모바일에 설치하는 "
-            "로컬 CA는 장기 신뢰 인증서이므로 매일 다시 설치할 필요가 없습니다. 지금 필수 설정을 진행할까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
+            "이 인증서는 카메라 접근 권한이나 외부 전송 권한을 주는 것이 아니라, 로컬 HTTPS 통신을 "
+            "암호화하고 서버 신원을 확인하는 용도입니다.\n\n"
+            "서버 인증서는 발급 후 24시간만 유효합니다. 앱이 꺼져 있으면 갱신되지 않으며, 만료된 경우 "
+            "다음 EXE 실행 시 서버 시작 전에 새 인증서를 발급합니다. 모바일 신뢰 CA는 장기 인증서이므로 "
+            "매일 다시 설치하지 않습니다."
         )
-        if confirmation != QMessageBox.StandardButton.Yes:
+        description.setWordWrap(True)
+        description.setObjectName("mutedText")
+        auto_renew_checkbox = QCheckBox(
+            "앱 실행 중 인증서가 만료 2시간 이내이면 자동 갱신하고 HTTPS 서버 재시작"
+        )
+        auto_renew_checkbox.setChecked(self.auto_renew_certificate)
+        auto_renew_checkbox.setObjectName("autoRenewCertificate")
+        auto_renew_note = QLabel(
+            "기본값은 꺼짐입니다. 끄면 실행 중 사전 갱신하지 않으며 인증서가 만료될 수 있습니다."
+        )
+        auto_renew_note.setWordWrap(True)
+        auto_renew_note.setObjectName("mutedText")
+        actions = QHBoxLayout()
+        cancel_button = QPushButton("취소")
+        continue_button = QPushButton("필수 설정 진행")
+        continue_button.setObjectName("primaryButton")
+        cancel_button.clicked.connect(dialog.reject)
+        continue_button.clicked.connect(dialog.accept)
+        actions.addStretch()
+        actions.addWidget(cancel_button)
+        actions.addWidget(continue_button)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(auto_renew_checkbox)
+        layout.addWidget(auto_renew_note)
+        layout.addLayout(actions)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        self._set_auto_renew_certificate(auto_renew_checkbox.isChecked())
         script = resource_path("setup-ios-https.ps1")
         if not script.is_file():
             QMessageBox.critical(self, "설정 파일 없음", f"인증서 설정 스크립트를 찾을 수 없습니다.\n{script}")
@@ -662,10 +754,16 @@ class MainWindow(QMainWindow):
         self.setup_certificate_button.setEnabled(True)
         valid = self._refresh_certificate_state()
         if exit_code == 0 and valid:
+            renewal_text = (
+                "실행 중 만료 2시간 전 자동 갱신을 사용합니다."
+                if self.auto_renew_certificate
+                else "실행 중 자동 갱신은 꺼져 있습니다. 만료 후 다음 EXE 실행 시 새 인증서를 발급합니다."
+            )
             QMessageBox.information(
                 self,
                 "HTTPS 설정 완료",
-                "HTTPS 필수 설정이 완료되었습니다. 서버 인증서는 24시간마다 자동 갱신됩니다.\n\n"
+                "HTTPS 필수 설정이 완료되었습니다. 서버 인증서는 발급 후 24시간 유효합니다.\n"
+                f"{renewal_text}\n\n"
                 "카메라를 사용할 모바일 기기에 SmartTitration-RootCA.crt를 한 번 설치하고 신뢰하세요.",
             )
             self._start_server()
@@ -768,13 +866,49 @@ class MainWindow(QMainWindow):
         self.tray.hide()
         QApplication.quit()
 
+    def _prompt_close_action(self) -> str:
+        message = QMessageBox(self)
+        message.setWindowTitle("Smart Titration 닫기")
+        message.setIcon(QMessageBox.Icon.Question)
+        message.setText("서버 창을 닫으시겠습니까?")
+        message.setInformativeText(
+            "서버를 종료하면 연결된 모바일 카메라와 대시보드 연결도 모두 끊깁니다."
+        )
+        exit_button = message.addButton("서버 종료", QMessageBox.ButtonRole.DestructiveRole)
+        tray_button = message.addButton(
+            "트레이에서 계속 실행", QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = message.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        message.setDefaultButton(tray_button)
+        message.exec()
+        if message.clickedButton() is exit_button:
+            return "exit"
+        if message.clickedButton() is tray_button:
+            return "tray"
+        if message.clickedButton() is cancel_button:
+            return "cancel"
+        return "cancel"
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.quitting:
             event.accept()
             return
+        action = self._prompt_close_action()
+        if action == "tray":
+            event.ignore()
+            self.hide()
+            self.tray.showMessage(APP_NAME, "서버가 알림 영역에서 계속 실행됩니다.")
+            return
+        if action == "exit":
+            self.quitting = True
+            if self.server_thread and self.server_thread.isRunning():
+                self.server_thread.stop()
+                self.server_thread.wait(4_000)
+            self.tray.hide()
+            event.accept()
+            QTimer.singleShot(0, QApplication.quit)
+            return
         event.ignore()
-        self.hide()
-        self.tray.showMessage(APP_NAME, "서버가 알림 영역에서 계속 실행됩니다.")
 
 
 def main() -> None:

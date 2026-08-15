@@ -7,7 +7,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from certificate_manager import ensure_short_lived_server_certificate
+from certificate_manager import (
+    ensure_short_lived_server_certificate,
+    issue_short_lived_server_certificate,
+)
 
 
 def create_test_ca(directory: Path) -> None:
@@ -69,3 +72,34 @@ def test_server_certificate_is_valid_for_24_hours_and_reused(
 
     assert not renewed_again
     assert same_expiry == expires_at
+
+
+def test_two_hour_renewal_only_happens_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ca_directory = tmp_path / "ca"
+    create_test_ca(ca_directory)
+    monkeypatch.setenv("CAROOT", str(ca_directory))
+    certificate_path = tmp_path / "certs" / "titration.pem"
+    private_key_path = tmp_path / "certs" / "titration-key.pem"
+    issue_short_lived_server_certificate(
+        "192.168.10.20", certificate_path, private_key_path, validity_hours=1
+    )
+
+    renewed_when_off, _ = ensure_short_lived_server_certificate(
+        "192.168.10.20",
+        certificate_path,
+        private_key_path,
+        renew_before_hours=0,
+    )
+    renewed_when_on, expiry = ensure_short_lived_server_certificate(
+        "192.168.10.20",
+        certificate_path,
+        private_key_path,
+        renew_before_hours=2,
+    )
+
+    assert not renewed_when_off
+    assert renewed_when_on
+    assert expiry is not None
+    assert expiry - datetime.now(UTC) > timedelta(hours=23)
