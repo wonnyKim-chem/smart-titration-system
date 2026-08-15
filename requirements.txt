@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+numpy>=1.26,<3
+scipy>=1.12,<2
+qrcode>=7.4,<9
+PyInstaller>=6.10,<7
+pytest>=8,<10
+httpx>=0.27,<1

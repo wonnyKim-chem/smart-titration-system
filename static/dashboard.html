@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f1ec" />
+    <title>실시간 적정 분석 | Smart Titration</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">∂</div>
+        <div>
+          <p class="eyebrow">Live Analysis</p>
+          <h1>실시간 pH 적정 곡선</h1>
+        </div>
+      </div>
+      <span id="networkStatus" class="status">서버 연결 중</span>
+    </header>
+
+    <main class="workspace dashboard-grid">
+      <div class="plot-stack">
+        <section class="plot-panel" aria-labelledby="curveTitle">
+          <h2 id="curveTitle" class="hidden">pH 대 부피</h2>
+          <div id="phPlot" class="plot"></div>
+        </section>
+        <section class="plot-panel" aria-labelledby="derivativeTitle">
+          <h2 id="derivativeTitle" class="hidden">1차 미분 대 부피</h2>
+          <div id="derivativePlot" class="plot"></div>
+        </section>
+      </div>
+
+      <aside class="control-panel">
+        <section class="equivalence">
+          <span>당량점 부피</span>
+          <strong id="equivalenceVolume">--.--</strong>
+          <span id="equivalencePh">pH --.--</span>
+        </section>
+
+        <div class="metric-row">
+          <div class="metric"><span>부피 레코드</span><strong id="volumeCount">0</strong></div>
+          <div class="metric"><span>pH 레코드</span><strong id="phCount">0</strong></div>
+          <div class="metric"><span>시간 정합</span><strong id="matchedCount">0</strong></div>
+          <div class="metric"><span>갱신 시각</span><strong id="updatedAt">--:--:--</strong></div>
+        </div>
+
+        <section class="control-section">
+          <h2>카메라 연결</h2>
+          <nav class="nav-links">
+            <a class="button-link" href="/burette">
+              <i data-lucide="ruler"></i><span>뷰렛 카메라</span>
+            </a>
+            <a class="button-link secondary" href="/ph-meter">
+              <i data-lucide="scan-line"></i><span>pH 계측기 카메라</span>
+            </a>
+          </nav>
+        </section>
+
+        <section class="control-section">
+          <h2>분석 상태</h2>
+          <div class="metric-row">
+            <div class="metric"><span>평활화</span><strong>S-G</strong></div>
+            <div class="metric"><span>동기 허용차</span><strong>1.5 s</strong></div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module" src="/static/dashboard.js"></script>
+  </body>
+</html>
