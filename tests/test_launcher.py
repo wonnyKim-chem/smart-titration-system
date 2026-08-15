@@ -57,7 +57,6 @@ def test_first_run_does_not_install_certificate_automatically(
     assert window.server_thread is None
     assert window.server_status.text() == "HTTPS 필수 설정 미완료"
     assert window.setup_certificate_button.text() == "HTTPS 필수 설정"
-    assert not window.auto_renew_toggle.isChecked()
     required_notice = window.findChild(QLabel, "requiredNotice")
     assert required_notice is not None
     assert "모바일 브라우저 카메라" in required_notice.text()

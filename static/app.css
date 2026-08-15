@@ -938,3 +938,115 @@ label {
   width: 17px;
   height: 17px;
 }
+
+.camera-experiment-status {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 9px clamp(16px, 4vw, 40px);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.86);
+  font-size: 0.8rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.camera-experiment-status.recording {
+  color: #8f2f27;
+  background: #fde9e6;
+}
+
+.camera-experiment-status.recording::before {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: recording-pulse 1.2s ease-in-out infinite;
+  content: "";
+}
+
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.72); }
+}
+
+.experiment-list-item.recording strong::before {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: recording-pulse 1.2s ease-in-out infinite;
+  content: "";
+}
+
+.experiment-actions .collection-start-active {
+  border-color: var(--accent-strong);
+  color: #ffffff;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(8, 127, 109, 0.12);
+}
+
+.experiment-actions .collection-stop-active {
+  border-color: #8f2f27;
+  color: #ffffff;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(196, 66, 53, 0.14);
+  animation: stop-button-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes stop-button-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(196, 66, 53, 0.14); }
+  50% { box-shadow: 0 0 0 6px rgba(196, 66, 53, 0.06); }
+}
+
+.help-tooltip {
+  position: relative;
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  margin-left: 4px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.help-tooltip::after {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(310px, 75vw);
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(23, 32, 31, 0.16);
+  content: attr(data-tooltip);
+  font-family: "Noto Sans KR", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.55;
+  text-align: left;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.help-tooltip:hover::after,
+.help-tooltip:focus-visible::after {
+  visibility: visible;
+  opacity: 1;
+}
+
+.color-endpoint .help-tooltip::after {
+  color: var(--ink);
+}

@@ -41,11 +41,24 @@ class ExperimentStore:
             raise ValueError("잘못된 실험 ID입니다.")
         return self.directory / f"{experiment_id}.json"
 
-    def create(self, title: str) -> dict[str, Any]:
+    def unique_title(self, title: str, force_suffix: bool = False) -> str:
+        """필요할 때 (1), (2) 접미사를 붙여 고유 제목을 만든다."""
+        base_title = normalise_title(title)
+        existing_titles = {str(item["title"]) for item in self.list()}
+        if not force_suffix and base_title not in existing_titles:
+            return base_title
+        suffix = 1
+        while f"{base_title} ({suffix})" in existing_titles:
+            suffix += 1
+        return f"{base_title} ({suffix})"
+
+    def create(self, title: str, ensure_unique: bool = False) -> dict[str, Any]:
         now = int(time.time() * 1000)
         experiment = {
             "id": uuid.uuid4().hex,
-            "title": normalise_title(title),
+            "title": self.unique_title(title, force_suffix=True)
+            if ensure_unique
+            else normalise_title(title),
             "status": "stopped",
             "createdAt": now,
             "updatedAt": now,
@@ -99,6 +112,10 @@ class ExperimentStore:
             )
         experiments.sort(key=lambda item: item.get("updatedAt") or 0, reverse=True)
         return experiments
+
+    def recording_experiments(self) -> list[dict[str, Any]]:
+        """현재 데이터 입력 중인 모든 실험 요약을 반환한다."""
+        return [item for item in self.list() if item.get("status") == "recording"]
 
     def set_status(self, experiment: dict[str, Any], status: str) -> None:
         if status not in ("recording", "stopped"):

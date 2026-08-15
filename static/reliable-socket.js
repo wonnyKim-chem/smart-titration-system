@@ -10,6 +10,7 @@ export class ReliableMeasurementSocket {
     this.channel = channel;
     this.clientId = getClientId(channel);
     this.onConnectionChange = onConnectionChange;
+    this.experimentStatusElement = document.querySelector("#experimentStatus");
     this.socket = null;
     this.retryDelay = 500;
     this.retryTimer = null;
@@ -31,6 +32,10 @@ export class ReliableMeasurementSocket {
 
     this.socket.addEventListener("message", async (event) => {
       const message = JSON.parse(event.data);
+      if (message.type === "experiment-status") {
+        this.updateExperimentStatus(message.experiments ?? []);
+        return;
+      }
       if (message.type !== "ack") return;
       const rejectedIds = (message.rejected ?? []).map((item) => item.id).filter(Boolean);
       await markMeasurementsSynced([...(message.ids ?? []), ...rejectedIds]);
@@ -46,6 +51,19 @@ export class ReliableMeasurementSocket {
     });
 
     this.socket.addEventListener("error", () => this.socket?.close());
+  }
+
+  updateExperimentStatus(experiments) {
+    if (!this.experimentStatusElement) return;
+    const titles = experiments.map((experiment) => experiment.title);
+    this.experimentStatusElement.classList.toggle("recording", titles.length > 0);
+    if (titles.length === 0) {
+      this.experimentStatusElement.textContent = "대시보드에서 데이터 입력을 시작하세요.";
+    } else if (titles.length === 1) {
+      this.experimentStatusElement.textContent = `“${titles[0]}” 데이터 입력 중`;
+    } else {
+      this.experimentStatusElement.textContent = `${titles.length}개 실험 동시 입력 중: ${titles.join(", ")}`;
+    }
   }
 
   scheduleReconnect() {

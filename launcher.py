@@ -348,9 +348,6 @@ class MainWindow(QMainWindow):
         self.certificate_detail.setObjectName("mutedText")
         self.auto_renew_status = QLabel("")
         self.auto_renew_status.setObjectName("mutedText")
-        self.auto_renew_toggle = QCheckBox("만료 2시간 전 자동 갱신 및 서버 재시작")
-        self.auto_renew_toggle.setChecked(self.auto_renew_certificate)
-        self.auto_renew_toggle.toggled.connect(self._set_auto_renew_certificate)
         certificate_reason = QLabel(
             "서버 시작과 모바일 브라우저 카메라 사용에는 신뢰된 HTTPS가 필수입니다. "
             "카메라를 사용할 iPhone·Android에도 로컬 CA 인증서를 설치하고 신뢰해야 합니다."
@@ -369,7 +366,6 @@ class MainWindow(QMainWindow):
         certificate_layout.addWidget(self.certificate_status)
         certificate_layout.addWidget(self.certificate_detail)
         certificate_layout.addWidget(self.auto_renew_status)
-        certificate_layout.addWidget(self.auto_renew_toggle)
         certificate_layout.addWidget(certificate_reason)
         certificate_layout.addLayout(certificate_actions)
         operation_column.addWidget(certificate_panel)
@@ -634,10 +630,6 @@ class MainWindow(QMainWindow):
     def _set_auto_renew_certificate(self, enabled: bool) -> None:
         self.auto_renew_certificate = enabled
         save_auto_renew_setting(enabled)
-        if self.auto_renew_toggle.isChecked() != enabled:
-            self.auto_renew_toggle.blockSignals(True)
-            self.auto_renew_toggle.setChecked(enabled)
-            self.auto_renew_toggle.blockSignals(False)
         if enabled:
             self.certificate_timer.start()
         else:

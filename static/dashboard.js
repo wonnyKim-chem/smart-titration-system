@@ -32,9 +32,14 @@ const newExperimentDialog = document.querySelector("#newExperimentDialog");
 const newExperimentForm = document.querySelector("#newExperimentForm");
 const experimentTitleInput = document.querySelector("#experimentTitleInput");
 const cancelNewExperimentButton = document.querySelector("#cancelNewExperiment");
+const recordingConflictDialog = document.querySelector("#recordingConflictDialog");
+const continueAndCreateButton = document.querySelector("#continueAndCreate");
+const stopAndCreateButton = document.querySelector("#stopAndCreate");
+const cancelConflictButton = document.querySelector("#cancelConflict");
 
 let currentExperiment = null;
 let experiments = [];
+let pendingExperimentTitle = null;
 
 const plotConfiguration = {
   responsive: true,
@@ -265,6 +270,8 @@ function updateCurrentExperiment(experiment) {
   collectionStatus.classList.toggle("recording", recording);
   startCollectionButton.disabled = !exists || recording;
   stopCollectionButton.disabled = !exists || !recording;
+  startCollectionButton.classList.toggle("collection-start-active", exists && !recording);
+  stopCollectionButton.classList.toggle("collection-stop-active", recording);
   exportCsvButton.disabled = !exists;
   exportXlsxButton.disabled = !exists;
   savePlotsButton.disabled = !exists;
@@ -284,6 +291,7 @@ function renderExperimentList() {
     button.type = "button";
     button.className = "experiment-list-item";
     button.classList.toggle("active", experiment.id === currentExperiment?.id);
+    button.classList.toggle("recording", experiment.status === "recording");
     const title = document.createElement("strong");
     title.textContent = experiment.title;
     const detail = document.createElement("span");
@@ -322,15 +330,10 @@ async function loadExperiments(autoSelect = true) {
   }
 }
 
-async function createExperiment(title) {
-  let stopCurrent = false;
-  if (currentExperiment?.status === "recording") {
-    stopCurrent = confirm("현재 실험의 데이터 입력을 중지하고 새 실험을 만들까요?");
-    if (!stopCurrent) return;
-  }
+async function createExperiment(title, recordingAction = "") {
   const { response, body } = await requestJson("/api/experiments", {
     method: "POST",
-    body: JSON.stringify({ title, stopCurrent }),
+    body: JSON.stringify({ title, recordingAction }),
   });
   if (!response.ok) {
     alert(body.message ?? "실험을 만들지 못했습니다.");
@@ -340,17 +343,11 @@ async function createExperiment(title) {
   await loadExperiments(false);
 }
 
-async function selectExperiment(experimentId, askBeforeStopping = true) {
+async function selectExperiment(experimentId) {
   if (experimentId === currentExperiment?.id) return;
-  let stopCurrent = false;
-  if (currentExperiment?.status === "recording") {
-    if (!askBeforeStopping) return;
-    stopCurrent = confirm("현재 실험의 데이터 입력을 중지하고 선택한 실험으로 이동할까요?");
-    if (!stopCurrent) return;
-  }
   const { response, body } = await requestJson(`/api/experiments/${experimentId}/select`, {
     method: "POST",
-    body: JSON.stringify({ stopCurrent }),
+    body: "{}",
   });
   if (!response.ok) {
     alert(body.message ?? "실험을 선택하지 못했습니다.");
@@ -434,7 +431,14 @@ function connectDashboard() {
   });
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
-    if (message.type === "analysis") renderAnalysis(message);
+    if (message.type === "analysis") {
+      const recordingIds = new Set((message.recordingExperiments ?? []).map((item) => item.id));
+      experiments = experiments.map((item) => ({
+        ...item,
+        status: recordingIds.has(item.id) ? "recording" : "stopped",
+      }));
+      renderAnalysis(message);
+    }
   });
   socket.addEventListener("close", () => {
     networkStatus.textContent = "재연결 중";
@@ -461,6 +465,11 @@ newExperimentForm.addEventListener("submit", async (event) => {
   const title = experimentTitleInput.value.trim();
   if (!title) return;
   newExperimentDialog.close();
+  if (experiments.some((experiment) => experiment.status === "recording")) {
+    pendingExperimentTitle = title;
+    recordingConflictDialog.showModal();
+    return;
+  }
   await createExperiment(title);
 });
 cancelNewExperimentButton.addEventListener("click", () => newExperimentDialog.close());
@@ -470,6 +479,22 @@ exportCsvButton.addEventListener("click", () => downloadExperimentFile("csv"));
 exportXlsxButton.addEventListener("click", () => downloadExperimentFile("xlsx"));
 savePlotsButton.addEventListener("click", saveAllPlots);
 refreshExperimentsButton.addEventListener("click", () => loadExperiments(false));
+continueAndCreateButton.addEventListener("click", async () => {
+  recordingConflictDialog.close();
+  const title = pendingExperimentTitle;
+  pendingExperimentTitle = null;
+  if (title) await createExperiment(title, "continue");
+});
+stopAndCreateButton.addEventListener("click", async () => {
+  recordingConflictDialog.close();
+  const title = pendingExperimentTitle;
+  pendingExperimentTitle = null;
+  if (title) await createExperiment(title, "stop");
+});
+cancelConflictButton.addEventListener("click", () => {
+  pendingExperimentTitle = null;
+  recordingConflictDialog.close();
+});
 document.querySelectorAll(".plot-download").forEach((button) => {
   button.addEventListener("click", () => saveSinglePlot(button.dataset.plot));
 });

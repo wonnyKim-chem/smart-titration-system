@@ -72,8 +72,8 @@
             <span>pH 당량점</span><strong id="equivalenceVolume">--.--</strong><span id="equivalencePh">pH --.--</span>
           </section>
           <section class="endpoint-summary color-endpoint">
-            <span>지시약 색 종말점</span><strong id="colorEndpointVolume">--.--</strong><span id="colorEndpointDelta">Δ색 --.-</span>
-            <small class="delta-formula">Δ색 = √[(L*−L₀*)² + (a*−a₀*)² + (b*−b₀*)²]</small>
+            <span>지시약 색 종말점</span><strong id="colorEndpointVolume">--.--</strong>
+            <span><span id="colorEndpointDelta">Δ색 --.-</span><span class="help-tooltip" tabindex="0" data-tooltip="Δ색 = √[(L*−L₀*)²+(a*−a₀*)²+(b*−b₀*)²]. L*은 밝기, a*는 녹색↔빨강, b*는 파랑↔노랑 성분입니다. 아래첨자 0은 실험 시작 기준색, 아래첨자 없는 값은 현재색입니다." aria-label="Δ색 계산 설명">?</span></span>
           </section>
           <section class="endpoint-summary temperature-peak">
             <span>온도 최고점 부피</span><strong id="temperaturePeakVolume">--.--</strong><span id="temperaturePeak">--.- °C</span>
@@ -121,8 +121,8 @@
         <section class="control-section">
           <h2>분석 상태</h2>
           <div class="metric-row">
-            <div class="metric"><span>평활화</span><strong>S-G</strong></div>
-            <div class="metric"><span>동기 허용차</span><strong>1.5 s</strong></div>
+            <div class="metric"><span>평활화 <span class="help-tooltip" tabindex="0" data-tooltip="Savitzky-Golay 필터로 측정 잡음을 줄이면서 곡선의 기울기와 봉우리 형태를 보존합니다." aria-label="평활화 설명">?</span></span><strong>S-G</strong></div>
+            <div class="metric"><span>동기 허용차 <span class="help-tooltip" tabindex="0" data-tooltip="서로 다른 카메라 측정 시각이 최대 1.5초 차이일 때 같은 시점의 부피·pH·온도·색 데이터로 연결합니다." aria-label="동기 허용차 설명">?</span></span><strong>1.5 s</strong></div>
           </div>
         </section>
       </aside>
@@ -137,6 +137,17 @@
         <button type="submit">실험 만들기</button>
         <button id="cancelNewExperiment" class="secondary" type="button">취소</button>
       </form>
+    </dialog>
+
+    <dialog id="recordingConflictDialog" class="guided-dialog">
+      <p class="step-label">입력 중인 실험이 있습니다</p>
+      <h2>새 실험을 어떻게 시작할까요?</h2>
+      <p>기존 입력을 유지하면 새 실험 제목에 (1), (2) 등을 자동으로 붙이고 새 실험의 데이터 입력도 즉시 시작합니다. 이후 측정값은 입력 중인 모든 실험에 함께 저장됩니다.</p>
+      <div class="dialog-choice-grid">
+        <button id="continueAndCreate" type="button"><i data-lucide="copy-plus"></i><span>기존 입력 유지 · 새 실험도 시작</span></button>
+        <button id="stopAndCreate" class="secondary" type="button"><i data-lucide="square"></i><span>기존 입력 모두 중지 · 새 실험 생성</span></button>
+      </div>
+      <button id="cancelConflict" class="secondary" type="button">취소</button>
     </dialog>
 
     <script type="module" src="/static/dashboard.js"></script>

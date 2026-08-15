@@ -148,6 +148,12 @@ def test_health_and_static_pages() -> None:
         assert "CSV" in dashboard_page
         assert "XLSX" in dashboard_page
         assert "그래프 PNG 저장" in dashboard_page
+        assert "기존 입력 유지 · 새 실험도 시작" in dashboard_page
+        assert 'aria-label="평활화 설명"' in dashboard_page
+        assert 'aria-label="동기 허용차 설명"' in dashboard_page
+        assert 'aria-label="Δ색 계산 설명"' in dashboard_page
+        assert 'id="experimentStatus"' in burette_page.text
+        assert 'id="experimentStatus"' in ph_meter_page.text
 
 
 def test_measurement_websocket_tracks_connected_camera() -> None:

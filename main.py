@@ -138,42 +138,63 @@ class MeasurementHub:
     ) -> tuple[list[str], list[dict[str, str]]]:
         accepted_ids: list[str] = []
         rejected: list[dict[str, str]] = []
+        normalised_records: list[dict[str, Any]] = []
+        for raw_record in records:
+            try:
+                normalised_records.append(self._normalise_record(channel, raw_record))
+            except (KeyError, TypeError, ValueError) as error:
+                rejected.append(
+                    {"id": str(raw_record.get("id", "")), "reason": str(error)}
+                )
 
-        if not self.active_experiment or self.active_experiment.get("status") != "recording":
-            return [], [
+        recording_summaries = self.experiment_store.recording_experiments()
+        if not recording_summaries:
+            rejected.extend(
                 {
                     "id": str(record.get("id", "")),
                     "reason": "대시보드에서 실험 데이터 입력을 시작하세요.",
                 }
-                for record in records
-            ]
+                for record in normalised_records
+            )
+            return [], rejected
 
         async with self.lock:
-            for raw_record in records:
-                try:
-                    record = self._normalise_record(channel, raw_record)
-                except (KeyError, TypeError, ValueError) as error:
-                    rejected.append(
-                        {"id": str(raw_record.get("id", "")), "reason": str(error)}
-                    )
+            active_updated = False
+            for summary in recording_summaries:
+                experiment_id = str(summary["id"])
+                if self.active_experiment and self.active_experiment.get("id") == experiment_id:
+                    for record in normalised_records:
+                        record_id = str(record["id"])
+                        if record_id in self.seen_ids[channel]:
+                            continue
+                        if len(self.streams[channel]) == MAX_STREAM_SIZE:
+                            expired = self.streams[channel].popleft()
+                            self.seen_ids[channel].discard(str(expired["id"]))
+                        self.streams[channel].append(record)
+                        self.seen_ids[channel].add(record_id)
+                    self.persist_active_experiment()
+                    active_updated = True
                     continue
 
-                record_id = record["id"]
-                if record_id not in self.seen_ids[channel]:
-                    if len(self.streams[channel]) == MAX_STREAM_SIZE:
-                        expired = self.streams[channel].popleft()
-                        self.seen_ids[channel].discard(expired["id"])
-                    self.streams[channel].append(record)
-                    self.seen_ids[channel].add(record_id)
-                accepted_ids.append(record_id)
+                experiment = self.experiment_store.load(experiment_id)
+                target = experiment["streams"][channel]
+                seen = {str(item["id"]) for item in target}
+                for record in normalised_records:
+                    if str(record["id"]) not in seen:
+                        target.append(record)
+                        seen.add(str(record["id"]))
+                if len(target) > MAX_STREAM_SIZE:
+                    experiment["streams"][channel] = target[-MAX_STREAM_SIZE:]
+                self.experiment_store.save(experiment)
 
-            self.latest_analysis = analyse_streams(
-                list(self.streams["burette"]),
-                list(self.streams["ph"]),
-                list(self.streams["temperature"]),
-                list(self.streams["color"]),
-            )
-            self.persist_active_experiment()
+            accepted_ids = [str(record["id"]) for record in normalised_records]
+            if active_updated:
+                self.latest_analysis = analyse_streams(
+                    list(self.streams["burette"]),
+                    list(self.streams["ph"]),
+                    list(self.streams["temperature"]),
+                    list(self.streams["color"]),
+                )
             snapshot = self.snapshot()
 
         await self.broadcast(snapshot)
@@ -198,6 +219,7 @@ class MeasurementHub:
             "type": "analysis",
             "serverTimestamp": int(time.time() * 1000),
             "experiment": experiment,
+            "recordingExperiments": self.experiment_store.recording_experiments(),
             "streamCounts": {
                 channel: len(self.streams[channel]) for channel in CHANNEL_FIELDS
             },
@@ -220,6 +242,22 @@ class MeasurementHub:
                 disconnected.append(websocket)
         for websocket in disconnected:
             self.unregister_dashboard(websocket)
+
+    async def broadcast_recording_status(self) -> None:
+        """모든 측정 카메라에 현재 입력 중 실험 제목을 알린다."""
+        payload = {
+            "type": "experiment-status",
+            "experiments": self.experiment_store.recording_experiments(),
+        }
+        disconnected: list[tuple[Channel, WebSocket]] = []
+        for channel, clients in self.measurement_clients.items():
+            for websocket in tuple(clients):
+                try:
+                    await websocket.send_json(payload)
+                except (RuntimeError, WebSocketDisconnect):
+                    disconnected.append((channel, websocket))
+        for channel, websocket in disconnected:
+            self.measurement_clients[channel].discard(websocket)
 
 
 def match_by_timestamp(
@@ -608,46 +646,44 @@ async def create_experiment(request: Request) -> JSONResponse:
         payload = await request.json()
     except (ValueError, TypeError):
         return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
-    if hub.active_experiment and hub.active_experiment.get("status") == "recording":
-        if not bool(payload.get("stopCurrent", False)):
+    recording_experiments = experiment_store.recording_experiments()
+    recording_action = str(payload.get("recordingAction", ""))
+    if recording_experiments:
+        if recording_action not in ("stop", "continue"):
             return JSONResponse(
-                {"message": "현재 실험의 데이터 입력을 중지한 뒤 새 실험을 만들어야 합니다."},
+                {
+                    "message": "입력 중인 실험을 중지할지, 함께 계속 입력할지 선택하세요.",
+                    "code": "recording-experiments-active",
+                },
                 status_code=409,
             )
-        experiment_store.set_status(hub.active_experiment, "stopped")
+        if recording_action == "stop":
+            for summary in recording_experiments:
+                running_experiment = experiment_store.load(str(summary["id"]))
+                experiment_store.set_status(running_experiment, "stopped")
+                if hub.active_experiment and hub.active_experiment.get("id") == summary["id"]:
+                    hub.active_experiment["status"] = "stopped"
     try:
-        experiment = experiment_store.create(str(payload.get("title", "")))
+        experiment = experiment_store.create(
+            str(payload.get("title", "")),
+            ensure_unique=recording_action == "continue",
+        )
     except (ValueError, TypeError):
         return JSONResponse({"message": "실험 제목을 입력하세요."}, status_code=400)
+    if recording_action == "continue":
+        experiment_store.set_status(experiment, "recording")
     hub.select_experiment(experiment)
     await hub.broadcast(hub.snapshot())
+    await hub.broadcast_recording_status()
     return JSONResponse({"experiment": hub.snapshot()["experiment"]}, status_code=201)
 
 
 @app.post("/api/experiments/{experiment_id}/select")
 async def select_experiment(experiment_id: str, request: Request) -> JSONResponse:
     try:
-        payload = await request.json()
-    except ValueError:
-        payload = {}
-    stop_current = bool(payload.get("stopCurrent", False))
-    if (
-        hub.active_experiment
-        and hub.active_experiment.get("id") != experiment_id
-        and hub.active_experiment.get("status") == "recording"
-    ):
-        if not stop_current:
-            return JSONResponse(
-                {"message": "현재 실험의 데이터 입력을 중지한 뒤 이동해야 합니다."},
-                status_code=409,
-            )
-        experiment_store.set_status(hub.active_experiment, "stopped")
-    try:
         experiment = experiment_store.load(experiment_id)
     except (FileNotFoundError, ValueError):
         return JSONResponse({"message": "실험을 찾을 수 없습니다."}, status_code=404)
-    if experiment.get("status") == "recording":
-        experiment_store.set_status(experiment, "stopped")
     hub.select_experiment(experiment)
     await hub.broadcast(hub.snapshot())
     return JSONResponse({"experiment": hub.snapshot()["experiment"]})
@@ -659,6 +695,7 @@ async def start_experiment(experiment_id: str) -> JSONResponse:
         return JSONResponse({"message": "먼저 실험을 선택하세요."}, status_code=409)
     experiment_store.set_status(hub.active_experiment, "recording")
     await hub.broadcast(hub.snapshot())
+    await hub.broadcast_recording_status()
     return JSONResponse({"experiment": hub.snapshot()["experiment"]})
 
 
@@ -669,6 +706,7 @@ async def stop_experiment(experiment_id: str) -> JSONResponse:
     experiment_store.set_status(hub.active_experiment, "stopped")
     hub.persist_active_experiment()
     await hub.broadcast(hub.snapshot())
+    await hub.broadcast_recording_status()
     return JSONResponse({"experiment": hub.snapshot()["experiment"]})
 
 
@@ -821,6 +859,12 @@ async def measurement_socket(websocket: WebSocket, channel: str) -> None:
     await websocket.accept()
     typed_channel = cast(Channel, channel)
     hub.measurement_clients[typed_channel].add(websocket)
+    await websocket.send_json(
+        {
+            "type": "experiment-status",
+            "experiments": experiment_store.recording_experiments(),
+        }
+    )
     try:
         while True:
             message = await websocket.receive_json()

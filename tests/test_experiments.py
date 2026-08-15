@@ -39,6 +39,7 @@ def test_experiment_lifecycle_and_exports(isolated_experiments: ExperimentStore)
         assert started.json()["experiment"]["status"] == "recording"
 
         with client.websocket_connect("/ws/burette") as websocket:
+            assert websocket.receive_json()["type"] == "experiment-status"
             websocket.send_json(
                 {
                     "type": "batch",
@@ -60,6 +61,7 @@ def test_experiment_lifecycle_and_exports(isolated_experiments: ExperimentStore)
             )
             assert websocket.receive_json()["ids"] == ["volume-1", "volume-2"]
         with client.websocket_connect("/ws/ph") as websocket:
+            assert websocket.receive_json()["type"] == "experiment-status"
             websocket.send_json(
                 {
                     "type": "batch",
@@ -100,7 +102,7 @@ def test_experiment_lifecycle_and_exports(isolated_experiments: ExperimentStore)
         assert workbook["실험 요약"]["B2"].value == "강산-강염기 1차"
 
 
-def test_switching_recording_experiment_requires_confirmation(
+def test_switching_view_keeps_recording_and_continue_creation_copies_data(
     isolated_experiments: ExperimentStore,
 ) -> None:
     with TestClient(main.app) as client:
@@ -109,22 +111,46 @@ def test_switching_recording_experiment_requires_confirmation(
         ]["id"]
         client.post(f"/api/experiments/{first_id}/start")
         blocked_create = client.post(
-            "/api/experiments", json={"title": "둘째 실험", "stopCurrent": False}
+            "/api/experiments", json={"title": "첫 실험"}
         )
         assert blocked_create.status_code == 409
-        second_id = client.post(
-            "/api/experiments", json={"title": "둘째 실험", "stopCurrent": True}
-        ).json()["experiment"]["id"]
-        client.post(f"/api/experiments/{first_id}/select", json={"stopCurrent": False})
-        client.post(f"/api/experiments/{first_id}/start")
-
-        blocked = client.post(
-            f"/api/experiments/{second_id}/select", json={"stopCurrent": False}
+        created = client.post(
+            "/api/experiments",
+            json={"title": "첫 실험", "recordingAction": "continue"},
         )
-        assert blocked.status_code == 409
+        second_id = created.json()["experiment"]["id"]
+        assert created.json()["experiment"]["title"] == "첫 실험 (1)"
+        assert created.json()["experiment"]["status"] == "recording"
 
-        switched = client.post(
-            f"/api/experiments/{second_id}/select", json={"stopCurrent": True}
-        )
+        switched = client.post(f"/api/experiments/{first_id}/select", json={})
         assert switched.status_code == 200
-        assert switched.json()["experiment"]["id"] == second_id
+        assert switched.json()["experiment"]["id"] == first_id
+        assert switched.json()["experiment"]["status"] == "recording"
+        assert len(isolated_experiments.recording_experiments()) == 2
+
+        with client.websocket_connect("/ws/burette") as websocket:
+            status = websocket.receive_json()
+            assert status["type"] == "experiment-status"
+            assert {item["title"] for item in status["experiments"]} == {
+                "첫 실험",
+                "첫 실험 (1)",
+            }
+            websocket.send_json(
+                {
+                    "type": "batch",
+                    "records": [
+                        {
+                            "id": "shared-volume",
+                            "clientId": "burette-a",
+                            "timestamp": 1_700_000_100_000,
+                            "volume": 2.5,
+                        }
+                    ],
+                }
+            )
+            assert websocket.receive_json()["ids"] == ["shared-volume"]
+
+        first = isolated_experiments.load(first_id)
+        second = isolated_experiments.load(second_id)
+        assert first["streams"]["burette"][-1]["id"] == "shared-volume"
+        assert second["streams"]["burette"][-1]["id"] == "shared-volume"
