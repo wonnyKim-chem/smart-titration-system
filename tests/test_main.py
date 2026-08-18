@@ -191,7 +191,12 @@ def test_health_and_static_pages() -> None:
         assert burette_page.status_code == 200
         assert ph_meter_page.status_code == 200
         assert indicator_page.status_code == 200
-        assert "보정 중입니다" in burette_page.text
+        assert "0.01 mL까지 추적" in burette_page.text
+        assert "메니스커스를 터치해주세요" in burette_page.text
+        assert "중앙 수평선" in burette_page.text
+        assert "굴절·시차 위험" in burette_page.text
+        assert 'id="tiltGuideText"' in burette_page.text
+        assert 'id="detectionMode"' not in burette_page.text
         assert "Y 현재" not in burette_page.text
         assert "무엇을 측정할지 선택" in ph_meter_page.text
         assert "pH 값" in ph_meter_page.text

@@ -220,6 +220,8 @@ h2 {
 
 .camera-stage canvas.active {
   visibility: visible;
+  cursor: crosshair;
+  touch-action: none;
 }
 
 .camera-message {

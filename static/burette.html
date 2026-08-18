@@ -28,7 +28,7 @@
         <canvas id="processedFrame"></canvas>
         <p id="cameraMessage" class="camera-message">카메라 시작을 눌러 영상을 연결하세요.</p>
         <div id="tiltGuide" class="tilt-guide hidden" aria-hidden="true">
-          <span></span><p>휴대폰을 세로선과 나란히 맞춰주세요</p>
+          <span></span><p id="tiltGuideText">뷰렛이 세로선과 평행하도록 휴대폰을 회전해주세요</p>
         </div>
         <div class="camera-overlay">
           <output id="liveVolume" class="live-value">--.-- mL</output>
@@ -38,8 +38,8 @@
       <aside class="control-panel">
         <section class="control-section workflow-section">
           <p class="step-label">뷰렛 설정</p>
-          <h2>메니스커스를 비춰주세요</h2>
-          <p class="section-copy">뷰렛과 눈금 숫자가 함께 보이도록 고정하면 보정 과정을 차례로 안내합니다.</p>
+          <h2>메니스커스를 터치해주세요</h2>
+          <p class="section-copy">렌즈 높이를 메니스커스와 맞추고 액면을 중앙 수평선에 둔 뒤 터치하면, 원근·기울기를 검사하며 0.01 mL까지 추적합니다.</p>
           <div class="control-grid">
             <button id="startCamera" class="wide" type="button">
               <i data-lucide="camera"></i><span>카메라 시작</span>
@@ -67,18 +67,7 @@
         <details class="advanced-settings">
           <summary>메니스커스 인식이 잘 안 될 때</summary>
           <div class="advanced-body">
-            <label>
-              검출 방식
-              <select id="detectionMode">
-                <option value="canny">Canny 윤곽선</option>
-                <option value="threshold">밝기 이진화</option>
-              </select>
-            </label>
-            <p id="modeHelp" class="option-help"><strong>Canny</strong>는 투명한 액체의 가는 경계가 보일 때 적합합니다. 일반적인 조명에서는 이 설정을 먼저 사용하세요.</p>
-            <label>
-              경계 민감도 <output id="thresholdLabel">90</output>
-              <input id="threshold" type="range" min="20" max="220" value="90" />
-            </label>
+            <p class="option-help">뷰렛 내부 폭이 충분하고 0.1 mL 눈금이 메니스커스 위아래로 선명하게 보이도록 가까이 비춰주세요. 상하 눈금 크기나 관 폭이 12% 넘게 다르면 굴절·시차 위험으로 기록을 보류합니다.</p>
             <label>
               기록 주기
               <select id="sampleInterval">
@@ -102,8 +91,8 @@
       <div class="dialog-icon"><i data-lucide="flask-conical"></i></div>
       <p class="step-label">시작 전 준비</p>
       <h2>뷰렛을 화면에 맞춰주세요</h2>
-      <p>뷰렛에 적정용액을 넣고 콕을 잠근 뒤, 메니스커스(액체 표면)와 눈금 숫자가 함께 보이도록 비춰주세요.</p>
-      <p>휴대폰을 움직이지 않도록 고정하면 액체 표면을 자동으로 찾습니다.</p>
+      <p>휴대폰을 세로로 들고 렌즈 높이를 메니스커스와 맞춥니다. 액면과 위아래 0.1 mL 눈금이 함께 보이도록 정면에서 가까이 비춰주세요.</p>
+      <p>메니스커스를 중앙 십자선에 놓고 터치합니다. 이후에는 눈금 패턴으로 이동·배율·작은 회전을 보정하고, 굴절·시차 위험이 있으면 기록을 멈춥니다.</p>
       <button id="introConfirm" type="button">준비됐어요</button>
     </dialog>
 
@@ -112,7 +101,7 @@
         <div class="dialog-icon"><i data-lucide="ruler"></i></div>
         <p id="calibrationStepLabel" class="step-label">보정 1단계</p>
         <h2 id="calibrationTitle">메니스커스를 인식했습니다</h2>
-        <p id="calibrationPrompt">보정 중입니다. 현재 뷰렛의 실제 부피가 몇 mL인지 입력해주세요.</p>
+        <p id="calibrationPrompt">현재 뷰렛 눈금을 눈금 사이의 1/10인 0.01 mL까지 읽어 입력해주세요.</p>
         <label>
           실제 부피 (mL)
           <input id="actualVolume" type="number" value="0.00" min="0" max="100" step="0.01" inputmode="decimal" required />
@@ -125,7 +114,7 @@
       <div class="dialog-icon success"><i data-lucide="check"></i></div>
       <p class="step-label">보정 완료</p>
       <h2>측정을 시작합니다</h2>
-      <p>이제 뷰렛의 부피가 자동으로 기록됩니다. 휴대폰과 뷰렛의 위치를 움직이지 마세요.</p>
+      <p>이제 0.01 mL 단위로 기록합니다. 흔들림·흐림·축소가 심하면 자동으로 측정을 보류하며, 추적이 끊기면 현재 눈금값을 다시 확인합니다.</p>
       <button id="completionConfirm" type="button">확인</button>
     </dialog>
 
